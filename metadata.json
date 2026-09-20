@@ -1,0 +1,8 @@
+{
+  "name": "GamblePause Client Management & Assessment System",
+  "description": "Client management and assessment tracking system for GamblePause Initiative Africa, supporting recovery from harmful gambling across Nigeria.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "version": "1.0",
+  "project": "gamblepause-africa",
+  "description": "Firestore architecture and security definition for GamblePause Client Management & Assessment System",
+  "collections": {
+    "users": {
+      "description": "Staff, counsellors, and administrators with role-based credentials",
+      "fields": {
+        "email": "string",
+        "name": "string",
+        "role": "string (Super Admin | Counsellor | Analyst / Viewer)",
+        "phone": "string",
+        "assignedClientsCount": "number",
+        "active": "boolean",
+        "createdAt": "timestamp"
+      }
+    },
+    "clients": {
+      "description": "Client registry records with unique GP-XXXX IDs, biodata, and recovery status",
+      "fields": {
+        "id": "string (e.g. GP-0001)",
+        "firstName": "string",
+        "lastName": "string",
+        "preferredName": "string",
+        "age": "number",
+        "gender": "string",
+        "phone": "string",
+        "email": "string",
+        "state": "string",
+        "location": "string",
+        "occupation": "string",
+        "maritalStatus": "string",
+        "howHeard": "string",
+        "emergencyContact": "map",
+        "consentGiven": "boolean",
+        "registrationDate": "timestamp",
+        "status": "string (Active | Awaiting Assessment | Assessment Due | Overdue | Completed | Closed | Referred)",
+        "currentStageId": "string",
+        "currentStageName": "string",
+        "nextAssessmentId": "string",
+        "nextAssessmentName": "string",
+        "nextAssessmentDueDate": "timestamp",
+        "assignedCounsellorId": "string",
+        "assignedCounsellorName": "string",
+        "lastActivityDate": "timestamp",
+        "totalAssessmentsCompleted": "number",
+        "totalAssessmentsOverdue": "number",
+        "riskLevel": "string",
+        "secureAccessKey": "string"
+      }
+    },
+    "forms": {
+      "description": "Assessment form definitions, question sequences, and scoring rules",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "code": "string",
+        "description": "string",
+        "active": "boolean",
+        "order": "number",
+        "waitingDaysAfterCompletion": "number",
+        "nextFormId": "string",
+        "questions": "array of question maps",
+        "enableScoring": "boolean",
+        "maxPossibleScore": "number",
+        "scoringRanges": "array of scoring range maps"
+      }
+    },
+    "workflows": {
+      "description": "Assessment progression stages and delay intervals configured by admins",
+      "fields": {
+        "id": "string",
+        "formId": "string",
+        "stageName": "string",
+        "order": "number",
+        "delayDaysFromPrevious": "number",
+        "isInitialRegistration": "boolean",
+        "description": "string"
+      }
+    },
+    "assessmentResponses": {
+      "description": "Submitted assessment answers with automated decision-support scores and timestamps",
+      "fields": {
+        "id": "string",
+        "clientId": "string",
+        "clientName": "string",
+        "formId": "string",
+        "formName": "string",
+        "stageId": "string",
+        "submittedAt": "timestamp",
+        "answers": "array of answer maps",
+        "totalScore": "number",
+        "scoreRiskLevel": "string",
+        "status": "string",
+        "counsellorNotes": "string"
+      }
+    },
+    "counsellorAssignments": {
+      "description": "Permanent history of counsellor assignments and reassignments performed by Super Users",
+      "fields": {
+        "id": "string",
+        "clientId": "string",
+        "clientName": "string",
+        "previousCounsellorId": "string",
+        "previousCounsellorName": "string",
+        "newCounsellorId": "string",
+        "newCounsellorName": "string",
+        "changedById": "string",
+        "changedByName": "string",
+        "changedAt": "timestamp",
+        "reason": "string"
+      }
+    },
+    "caseNotes": {
+      "description": "Internal confidential notes entered by counsellors and super admins",
+      "fields": {
+        "id": "string",
+        "clientId": "string",
+        "authorId": "string",
+        "authorName": "string",
+        "authorRole": "string",
+        "createdAt": "timestamp",
+        "content": "string",
+        "followUpDate": "string",
+        "tags": "array of string"
+      }
+    },
+    "notifications": {
+      "description": "Queued and sent email, SMS, and WhatsApp reminder logs",
+      "fields": {
+        "id": "string",
+        "clientId": "string",
+        "clientName": "string",
+        "channel": "string (Email | SMS | WhatsApp)",
+        "recipient": "string",
+        "subject": "string",
+        "messageBody": "string",
+        "triggerType": "string",
+        "status": "string (Sent | Queued | Failed | Simulated)",
+        "scheduledFor": "timestamp",
+        "sentAt": "timestamp"
+      }
+    },
+    "auditLogs": {
+      "description": "Tamper-evident audit trail of system events, client registrations, and data views",
+      "fields": {
+        "id": "string",
+        "timestamp": "timestamp",
+        "userId": "string",
+        "userName": "string",
+        "userRole": "string",
+        "action": "string",
+        "targetType": "string",
+        "targetId": "string",
+        "details": "string"
+      }
+    },
+    "settings": {
+      "description": "System-wide notification timing, provider settings, and organization details",
+      "fields": {
+        "organizationName": "string",
+        "supportPhone": "string",
+        "supportEmail": "string",
+        "emailProvider": "string",
+        "smsProvider": "string",
+        "reminder1DelayHours": "number",
+        "reminder2DelayDays": "number",
+        "overdueThresholdDays": "number"
+      }
+    }
+  }
+}

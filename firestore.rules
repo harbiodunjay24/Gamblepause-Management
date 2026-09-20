@@ -1,0 +1,144 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper authentication functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        getUserData().role == 'Super Admin' ||
+        request.auth.token.email in ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org'] ||
+        getUserData().username in ['Abiodun.Ayodeji', 'Ladipo.Abiose']
+      );
+    }
+
+    function isCounsellor() {
+      return isAuthenticated() && (
+        getUserData().role == 'Counsellor' ||
+        isSuperAdmin()
+      );
+    }
+
+    function isStaff() {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        isCounsellor() ||
+        getUserData().role in ['Staff', 'Analyst / Viewer']
+      );
+    }
+
+    // Users collection: only Super Admin can write/create; users can update own profile
+    match /users/{userId} {
+      allow read: if isStaff();
+      allow write: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    // Clients collection:
+    // - Super Admin can read and manage ALL clients
+    // - Counsellor can ONLY read/update clients explicitly assigned to them
+    // - Database-level enforcement prevents Benjamin from reading Celia's or Micheal's clients
+    match /clients/{clientId} {
+      allow create: if request.resource.data.consentGiven == true
+                    && request.resource.data.id != null
+                    && request.resource.data.firstName != null;
+      allow read: if isSuperAdmin() || (
+        isCounsellor() && (
+          resource.data.assignedCounsellorId == request.auth.uid ||
+          resource.data.assignedCounsellorName == getUserData().name
+        )
+      ) || (
+        isAuthenticated() && resource.data.secureAccessKey == request.auth.uid
+      );
+      allow update: if isSuperAdmin() || (
+        isCounsellor() && (
+          resource.data.assignedCounsellorId == request.auth.uid ||
+          resource.data.assignedCounsellorName == getUserData().name
+        )
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Notifications:
+    // Super Admins read all; Counsellors can read notifications addressed specifically to them
+    match /notifications/{notifId} {
+      allow read: if isSuperAdmin() || (
+        isCounsellor() && (
+          resource.data.counsellorId == request.auth.uid ||
+          resource.data.recipientTarget == request.auth.uid ||
+          resource.data.counsellorName == getUserData().name
+        )
+      );
+      allow write: if isStaff();
+    }
+
+    // Forms collection: readable publicly for assessment questions; writable only by Super Admin
+    match /forms/{formId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Workflows: readable by all, editable by Super Admin
+    match /workflows/{stageId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Assessment Responses:
+    match /assessmentResponses/{responseId} {
+      allow create: if true;
+      allow read: if isSuperAdmin() || (
+        isCounsellor() && (
+          get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.assignedCounsellorId == request.auth.uid ||
+          get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.assignedCounsellorName == getUserData().name
+        )
+      );
+      allow update: if isSuperAdmin() || isCounsellor();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Case Notes: Confidential clinical records
+    match /caseNotes/{noteId} {
+      allow read: if isSuperAdmin() || (
+        isCounsellor() && (
+          resource.data.authorId == request.auth.uid ||
+          get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.assignedCounsellorId == request.auth.uid
+        )
+      );
+      allow create: if isCounsellor();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Counsellor Reassignment & Transfer History
+    // Super Admins read and manage all; Counsellors can read assignments involving their assigned clients
+    match /counsellorAssignments/{assignmentId} {
+      allow read: if isSuperAdmin() || (
+        isCounsellor() && (
+          resource.data.newCounsellorId == request.auth.uid ||
+          resource.data.previousCounsellorId == request.auth.uid
+        )
+      );
+      allow create: if isSuperAdmin();
+      allow update, delete: if false; // Permanent audit record
+    }
+
+    // Audit logs: immutable append-only trail
+    match /auditLogs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if true;
+      allow update, delete: if false;
+    }
+
+    // Global settings: readable by staff, editable by Super Admin
+    match /settings/{settingId} {
+      allow read: if isStaff();
+      allow write: if isSuperAdmin();
+    }
+  }
+}

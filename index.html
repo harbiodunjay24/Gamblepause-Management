@@ -3,6 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Defensive handler: prevent browser extensions (e.g. MetaMask / web3 wallets) from crashing the app
+      (function() {
+        try {
+          var originalDefineProperty = Object.defineProperty;
+          Object.defineProperty = function(obj, prop, descriptor) {
+            if (obj === window && prop === 'ethereum') {
+              try {
+                return originalDefineProperty.call(Object, obj, prop, Object.assign({}, descriptor, { configurable: true }));
+              } catch (_) {
+                try {
+                  if (descriptor && 'value' in descriptor) {
+                    window.ethereum = descriptor.value;
+                  }
+                } catch (__) {}
+                return obj;
+              }
+            }
+            return originalDefineProperty.apply(Object, arguments);
+          };
+
+          window.addEventListener('error', function(event) {
+            if (event && event.message && event.message.indexOf('ethereum') !== -1) {
+              event.stopImmediatePropagation();
+              event.preventDefault();
+            }
+          }, true);
+        } catch (_) {}
+      })();
+    </script>
     <title>GamblePause Client Management & Assessment System</title>
     <meta name="description" content="Client management and assessment tracking system for GamblePause Initiative Africa, supporting recovery from harmful gambling across Nigeria." />
     <meta property="og:title" content="GamblePause Client Management & Assessment System" />

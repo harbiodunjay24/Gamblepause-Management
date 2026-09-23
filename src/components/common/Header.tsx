@@ -1,6 +1,7 @@
 import React from 'react';
 import { Shield, Phone, Sparkles, Lock, LogOut, ArrowRight, HeartHandshake } from 'lucide-react';
 import { AuthUser } from '../../services/authService';
+import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 interface HeaderProps {
   isAuthenticated?: boolean;
@@ -77,6 +78,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right side navigation / view switchers */}
         <div className="flex items-center gap-2 sm:gap-3">
+          <PWAInstallButton compact />
           {isAdminView && isAuthenticated && currentUser ? (
             <div className="flex items-center gap-3">
               <div

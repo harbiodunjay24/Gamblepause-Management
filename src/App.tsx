@@ -21,6 +21,7 @@ import { AnalyticsExport } from './components/admin/AnalyticsExport';
 import { dataService } from './services/dataService';
 import { authService, AuthUser } from './services/authService';
 import { Client, StaffUser, FormDefinition } from './types';
+import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import {
   Users,
   UserCheck,
@@ -218,15 +219,16 @@ export default function App() {
   // RENDER ROUTE VIEWS
   // =========================================================================
 
-  // 1. TOKEN ASSESSMENT RUNNER
-  if (currentRoute === 'token-assessment' && assessmentToken) {
-    return (
-      <TokenAssessmentRunner
-        token={assessmentToken}
-        onExit={() => navigateTo('home')}
-      />
-    );
-  }
+  const renderCurrentView = () => {
+    // 1. TOKEN ASSESSMENT RUNNER
+    if (currentRoute === 'token-assessment' && assessmentToken) {
+      return (
+        <TokenAssessmentRunner
+          token={assessmentToken}
+          onExit={() => navigateTo('home')}
+        />
+      );
+    }
 
   // 2. CLIENT LOGIN
   if (currentRoute === 'client-login') {
@@ -557,5 +559,13 @@ export default function App() {
       onClientLogin={() => navigateTo('client-login')}
       onStaffLogin={() => navigateTo('admin-login')}
     />
+  );
+};
+
+  return (
+    <>
+      {renderCurrentView()}
+      <OfflineIndicator />
+    </>
   );
 }

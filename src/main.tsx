@@ -4,16 +4,18 @@ import App from './App.tsx';
 import './index.css';
 import {registerSW} from 'virtual:pwa-register';
 
-// Register service worker with auto-update for offline and low-connectivity readiness
-registerSW({
-  immediate: true,
-  onNeedRefresh() {
-    console.log('[PWA] New version available, updated in background.');
-  },
-  onOfflineReady() {
-    console.log('[PWA] GamblePause forms and materials are cached for offline access.');
-  },
-});
+// Register service worker with auto-update for offline and low-connectivity readiness in production
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  registerSW({
+    immediate: true,
+    onNeedRefresh() {
+      console.log('[PWA] New version available, updated in background.');
+    },
+    onOfflineReady() {
+      console.log('[PWA] GamblePause forms and materials are cached for offline access.');
+    },
+  });
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

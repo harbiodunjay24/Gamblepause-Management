@@ -1,5 +1,23 @@
 import { StaffUser, UserRole } from '../types';
 import { SUPER_ADMIN_NAME, SUPER_ADMIN_EMAIL } from '../data/gamblepauseMaterials';
+import { auth, db } from '../lib/firebase';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updateProfile,
+} from 'firebase/auth';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+  collection,
+  query,
+  where,
+  getDocs,
+} from 'firebase/firestore';
 
 export interface AuthUser {
   id: string;
@@ -178,6 +196,76 @@ class AuthService {
       }
     }
 
+    // Listen for Firebase Auth changes to keep state in sync across tabs and refreshes
+    try {
+      onAuthStateChanged(auth, async (fbUser) => {
+        if (fbUser) {
+          const cleanEmail = (fbUser.email || '').toLowerCase().trim();
+          let role: AuthUser['role'] = 'Client';
+
+          if (
+            cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
+            cleanEmail === 'ladipo.abiose@gamblepause.org'
+          ) {
+            role = 'Super Admin';
+          } else if (
+            cleanEmail === 'benjamin@gamblepause.org' ||
+            cleanEmail === 'micheal.akinniku@gamblepause.org' ||
+            cleanEmail === 'celia.badmus@gamblepause.org'
+          ) {
+            role = 'Counsellor';
+          } else if (cleanEmail.endsWith('@gamblepause.org')) {
+            role = 'Staff';
+          }
+
+          let clientId: string | undefined = undefined;
+          let displayName = fbUser.displayName || fbUser.email?.split('@')[0] || 'User';
+
+          if (db) {
+            try {
+              const uDoc = await getDoc(doc(db, 'users', fbUser.uid));
+              if (uDoc.exists()) {
+                const uData = uDoc.data();
+                if (uData.role) role = uData.role;
+                if (uData.name) displayName = uData.name;
+              }
+
+              // Look up client by authUid where client.authUid == fbUser.uid
+              if (role === 'Client') {
+                const q = query(collection(db, 'clients'), where('authUid', '==', fbUser.uid));
+                const cSnap = await getDocs(q);
+                if (!cSnap.empty) {
+                  const cDoc = cSnap.docs[0];
+                  clientId = cDoc.id;
+                  const cData = cDoc.data();
+                  if (cData.firstName) {
+                    displayName = `${cData.firstName} ${cData.lastName || ''}`.trim();
+                  }
+                }
+              }
+            } catch (e) {
+              // Ignore
+            }
+          }
+
+          const authUser: AuthUser = {
+            id: fbUser.uid,
+            name: displayName,
+            email: fbUser.email || '',
+            role: role,
+            clientId: clientId,
+            username: fbUser.email?.split('@')[0],
+          };
+
+          this.currentUser = authUser;
+          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+          this.notify();
+        }
+      });
+    } catch (e) {
+      console.warn('[authService] onAuthStateChanged listener notice:', e);
+    }
+
     this.initialized = true;
     this.notify();
   }
@@ -228,20 +316,235 @@ class AuthService {
   }
 
   /**
-   * Secure authentication with backend verification and local fallback
+   * Firebase Authentication user registration with email and password
+   */
+  public async firebaseRegister(
+    email: string,
+    password: string,
+    name?: string,
+    role: AuthUser['role'] = 'Client'
+  ): Promise<{ success: boolean; user?: AuthUser; error?: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+    }
+    if (!password || password.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters long.' };
+    }
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      const fbUser = cred.user;
+      const displayName = name?.trim() || cleanEmail.split('@')[0];
+
+      // Update Firebase Auth profile display name
+      try {
+        await updateProfile(fbUser, { displayName });
+      } catch (profileErr) {
+        console.warn('[authService] updateProfile notice:', profileErr);
+      }
+
+      // Save user profile to Firestore
+      if (db) {
+        try {
+          await setDoc(
+            doc(db, 'users', fbUser.uid),
+            {
+              id: fbUser.uid,
+              name: displayName,
+              email: cleanEmail,
+              role: role,
+              createdAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (firestoreErr) {
+          console.warn('[authService] Firestore user profile sync notice:', firestoreErr);
+        }
+      }
+
+      const authUser: AuthUser = {
+        id: fbUser.uid,
+        name: displayName,
+        email: fbUser.email || cleanEmail,
+        role: role,
+        username: cleanEmail.split('@')[0],
+      };
+
+      this.currentUser = authUser;
+      sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+      this.notify();
+
+      return { success: true, user: authUser };
+    } catch (err: any) {
+      console.warn('[authService] Firebase registration error:', err);
+      if (err.code === 'auth/email-already-in-use') {
+        return { success: false, error: 'USER ALREADY EXISTS ,SIGN IN' };
+      }
+      if (err.code === 'auth/weak-password') {
+        return { success: false, error: 'Password must be at least 6 characters long.' };
+      }
+      if (err.code === 'auth/invalid-email') {
+        return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+      }
+      return { success: false, error: err.message || 'Registration failed. Please try again.' };
+    }
+  }
+
+  /**
+   * Firebase Authentication user login with email and password
+   */
+  public async firebaseLogin(
+    email: string,
+    password: string,
+    targetPortal?: 'admin' | 'counsellor' | 'client'
+  ): Promise<{ success: boolean; user?: AuthUser; error?: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+    }
+    if (!password) {
+      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+    }
+
+    try {
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      const fbUser = cred.user;
+
+      let role: AuthUser['role'] = 'Client';
+      if (
+        cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
+        cleanEmail === 'ladipo.abiose@gamblepause.org'
+      ) {
+        role = 'Super Admin';
+      } else if (
+        cleanEmail === 'benjamin@gamblepause.org' ||
+        cleanEmail === 'micheal.akinniku@gamblepause.org' ||
+        cleanEmail === 'celia.badmus@gamblepause.org'
+      ) {
+        role = 'Counsellor';
+      } else if (cleanEmail.endsWith('@gamblepause.org')) {
+        role = 'Staff';
+      }
+
+      let clientId: string | undefined = undefined;
+      let displayName = fbUser.displayName || cleanEmail.split('@')[0];
+
+      if (db) {
+        try {
+          const uDoc = await getDoc(doc(db, 'users', fbUser.uid));
+          if (uDoc.exists()) {
+            const uData = uDoc.data();
+            if (uData.role) role = uData.role;
+            if (uData.name) displayName = uData.name;
+          }
+
+          // Authoritative lookup: find Firestore client where client.authUid == fbUser.uid
+          if (role === 'Client') {
+            const q = query(collection(db, 'clients'), where('authUid', '==', fbUser.uid));
+            const cSnap = await getDocs(q);
+            if (!cSnap.empty) {
+              const cDoc = cSnap.docs[0];
+              clientId = cDoc.id;
+              const cData = cDoc.data();
+              if (cData.firstName) {
+                displayName = `${cData.firstName} ${cData.lastName || ''}`.trim();
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[authService] Client lookup notice:', e);
+        }
+      }
+
+      // Check portal restrictions
+      if (targetPortal === 'admin' && role !== 'Super Admin' && role !== 'Staff' && role !== 'Counsellor') {
+        return {
+          success: false,
+          error: 'Access Denied: This account is not authorized for administrative access.',
+        };
+      }
+      if (targetPortal === 'counsellor' && role !== 'Counsellor' && role !== 'Super Admin') {
+        return {
+          success: false,
+          error: 'Access Denied: Counsellor credentials required.',
+        };
+      }
+      if (targetPortal === 'client' && role !== 'Client') {
+        return {
+          success: false,
+          error: 'This account is a Staff/Admin account. Please use the Admin & Staff Login.',
+        };
+      }
+
+      const authUser: AuthUser = {
+        id: fbUser.uid,
+        name: displayName,
+        email: fbUser.email || cleanEmail,
+        role: role,
+        clientId: clientId,
+        username: cleanEmail.split('@')[0],
+      };
+
+      this.currentUser = authUser;
+      sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+      this.notify();
+
+      return { success: true, user: authUser };
+    } catch (err: any) {
+      console.warn('[authService] Firebase login error:', err);
+      // As requested: IF EMAIL / PASSWORD ARE INCORRECT DISPLAY "PASSWORD OR EMAIL INCORRECT"
+      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+    }
+  }
+
+  /**
+   * Secure authentication with Firebase Auth first, followed by backend verification and local fallback
    */
   public async login(
     identifier: string,
     passwordAttempt: string,
     targetPortal?: 'admin' | 'counsellor' | 'client'
   ): Promise<{ success: boolean; user?: AuthUser; error?: string }> {
-    // 1. Attempt authentication against the shared backend database for cross-device consistency
+    const trimmedId = identifier.trim();
+
+    // 1. If identifier is an email, authenticate via Firebase Authentication
+    if (trimmedId.includes('@')) {
+      const fbResult = await this.firebaseLogin(trimmedId, passwordAttempt, targetPortal);
+      if (fbResult.success) {
+        return fbResult;
+      }
+      // If Firebase Auth returned invalid credentials, check if it exists in local seeded fallback (e.g. for offline dev)
+      const cleanId = trimmedId.toLowerCase();
+      const localCred = this.credentials[cleanId];
+      if (localCred) {
+        const attemptHash = await hashPassword(passwordAttempt);
+        if (attemptHash === localCred.hash) {
+          const user: AuthUser = {
+            id: localCred.userId,
+            name: localCred.name,
+            email: localCred.usernameOrEmail,
+            role: localCred.role,
+            clientId: localCred.clientId,
+            username: localCred.usernameOrEmail,
+          };
+          this.currentUser = user;
+          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(user));
+          this.notify();
+          return { success: true, user };
+        }
+      }
+      // Otherwise return user-specified exact error message
+      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
+    }
+
+    // 2. Attempt authentication against the shared backend database for cross-device consistency
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          usernameOrEmail: identifier.trim(),
+          usernameOrEmail: trimmedId,
           password: passwordAttempt,
         }),
       });
@@ -274,22 +577,22 @@ class AuthService {
         this.notify();
         return { success: true, user };
       } else if (response.status === 401 || response.status === 403) {
-        return { success: false, error: data.error || 'Invalid login credentials.' };
+        return { success: false, error: data.error || 'PASSWORD OR EMAIL INCORRECT' };
       }
     } catch (err) {
       console.warn('[authService] Backend login unavailable, verifying with local credentials:', err);
     }
 
-    // 2. Fallback to local credential cache
+    // 3. Fallback to local credential cache
     await this.init();
 
-    const cleanId = identifier.trim().toLowerCase();
+    const cleanId = trimmedId.toLowerCase();
     const cred = this.credentials[cleanId];
 
     if (!cred) {
       return {
         success: false,
-        error: 'Invalid login credentials. Please check your username/email and try again.',
+        error: 'PASSWORD OR EMAIL INCORRECT',
       };
     }
 
@@ -297,7 +600,7 @@ class AuthService {
     if (attemptHash !== cred.hash) {
       return {
         success: false,
-        error: 'Incorrect password. Please verify your password.',
+        error: 'PASSWORD OR EMAIL INCORRECT',
       };
     }
 
@@ -349,7 +652,12 @@ class AuthService {
   /**
    * Log out active user and clear session immediately
    */
-  public logout(): void {
+  public async logout(): Promise<void> {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.warn('[authService] Firebase signOut notice:', e);
+    }
     this.currentUser = null;
     sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
     this.notify();

@@ -33,10 +33,10 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
       if (res.success && res.user) {
         onLoginSuccess(res.user);
       } else {
-        setError(res.error || 'Authentication failed. Please check your credentials.');
+        setError(res.error || 'PASSWORD OR EMAIL INCORRECT');
       }
     } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred. Please try again.');
+      setError('PASSWORD OR EMAIL INCORRECT');
     } finally {
       setIsLoading(false);
     }

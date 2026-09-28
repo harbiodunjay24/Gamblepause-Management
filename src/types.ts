@@ -59,6 +59,7 @@ export interface Client {
   riskLevel?: 'Low' | 'Medium' | 'High';
   result?: string; // ADMIN-ONLY field: Clinical evaluation / score summary
   secureAccessKey: string; // Unguessable client assessment token
+  authUid?: string; // Firebase Authentication UID
   isDemo?: boolean; // Clearly marks DEMO DATA
 }
 

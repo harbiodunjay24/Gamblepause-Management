@@ -7,22 +7,25 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasUserData() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function getUserData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function isSuperAdmin() {
       return isAuthenticated() && (
-        getUserData().role == 'Super Admin' ||
         request.auth.token.email in ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org'] ||
-        getUserData().username in ['Abiodun.Ayodeji', 'Ladipo.Abiose']
+        (hasUserData() && (getUserData().role == 'Super Admin' || getUserData().username in ['Abiodun.Ayodeji', 'Ladipo.Abiose']))
       );
     }
 
     function isCounsellor() {
       return isAuthenticated() && (
-        getUserData().role == 'Counsellor' ||
-        isSuperAdmin()
+        isSuperAdmin() ||
+        (hasUserData() && getUserData().role == 'Counsellor')
       );
     }
 
@@ -30,7 +33,7 @@ service cloud.firestore {
       return isAuthenticated() && (
         isSuperAdmin() ||
         isCounsellor() ||
-        getUserData().role in ['Staff', 'Analyst / Viewer']
+        (hasUserData() && getUserData().role in ['Staff', 'Analyst / Viewer'])
       );
     }
 
@@ -43,24 +46,32 @@ service cloud.firestore {
     // Clients collection:
     // - Super Admin can read and manage ALL clients
     // - Counsellor can ONLY read/update clients explicitly assigned to them
-    // - Database-level enforcement prevents Benjamin from reading Celia's or Micheal's clients
+    // - Authenticated clients can create, read, and update their own client document
+    // - Database-level enforcement prevents unassigned staff or other clients from accessing records
     match /clients/{clientId} {
-      allow create: if request.resource.data.consentGiven == true
+      allow create: if isAuthenticated()
+                    && (request.resource.data.authUid == request.auth.uid || isSuperAdmin())
+                    && request.resource.data.consentGiven == true
                     && request.resource.data.id != null
                     && request.resource.data.firstName != null;
       allow read: if isSuperAdmin() || (
         isCounsellor() && (
           resource.data.assignedCounsellorId == request.auth.uid ||
-          resource.data.assignedCounsellorName == getUserData().name
+          (hasUserData() && resource.data.assignedCounsellorName == getUserData().name)
         )
       ) || (
-        isAuthenticated() && resource.data.secureAccessKey == request.auth.uid
+        isAuthenticated() && (
+          resource.data.authUid == request.auth.uid ||
+          resource.data.secureAccessKey == request.auth.uid
+        )
       );
       allow update: if isSuperAdmin() || (
         isCounsellor() && (
           resource.data.assignedCounsellorId == request.auth.uid ||
-          resource.data.assignedCounsellorName == getUserData().name
+          (hasUserData() && resource.data.assignedCounsellorName == getUserData().name)
         )
+      ) || (
+        isAuthenticated() && resource.data.authUid == request.auth.uid
       );
       allow delete: if isSuperAdmin();
     }

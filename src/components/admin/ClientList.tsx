@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   Filter,
@@ -35,6 +35,15 @@ export const ClientList: React.FC<ClientListProps> = ({
   const [counsellorFilter, setCounsellorFilter] = useState<string>('all');
   const [stateFilter, setStateFilter] = useState<string>('all');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Subscribe to dataService updates (e.g. real-time Firestore sync across devices)
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const unsub = dataService.subscribe(() => {
+      setTick((t) => t + 1);
+    });
+    return () => unsub();
+  }, []);
 
   const clients = dataService.getClients();
   const staff = dataService.getStaff();

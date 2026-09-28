@@ -20,6 +20,7 @@ import { CounsellorManagement } from './components/admin/CounsellorManagement';
 import { AnalyticsExport } from './components/admin/AnalyticsExport';
 import { dataService } from './services/dataService';
 import { authService, AuthUser } from './services/authService';
+import { auth } from './lib/firebase';
 import { Client, StaffUser, FormDefinition } from './types';
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import {
@@ -54,6 +55,7 @@ export default function App() {
 
   // Authenticated user state
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => authService.getCurrentUser());
+  const [, setRenderTrigger] = useState(0);
 
   // Admin section sub-tab
   const [adminTab, setAdminTab] = useState<string>('dashboard');
@@ -154,9 +156,15 @@ export default function App() {
       setCurrentUser(user);
     });
 
+    // Subscribe to dataService updates (e.g. real-time Firestore sync across devices)
+    const unsubData = dataService.subscribe(() => {
+      setRenderTrigger((v) => v + 1);
+    });
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
       unsubAuth();
+      unsubData();
     };
   }, []);
 
@@ -191,6 +199,12 @@ export default function App() {
 
   const handleIntakeComplete = (newClient: Client, startImmediate: boolean) => {
     setIntakeSuccessResult({ client: newClient, startImmediate });
+    if (currentUser) {
+      setCurrentUser({
+        ...currentUser,
+        clientId: newClient.id,
+      });
+    }
     if (startImmediate) {
       // Auto-sign in client so they can take the assessment seamlessly
       authService.registerClientCredentials(
@@ -278,14 +292,16 @@ export default function App() {
     }
 
     // If client clicked "Continue Assessment"
-    if (activeClientAssessmentFormId && currentUser.clientId) {
-      const activeClient = dataService.getClientById(currentUser.clientId);
+    if (activeClientAssessmentFormId) {
+      const activeClient =
+        (currentUser.clientId ? dataService.getClientById(currentUser.clientId) : undefined) ||
+        dataService.getClients().find((c) => c.authUid === currentUser.id || (auth.currentUser?.uid && c.authUid === auth.currentUser.uid));
       if (activeClient) {
         return (
           <div className="min-h-screen bg-gray-950 text-gray-100">
             <ClientAssessment
               client={activeClient}
-              formId={activeClientAssessmentFormId}
+              formId={activeClientAssessmentFormId === 'form-initial' ? 'form-recovery-1' : activeClientAssessmentFormId}
               onCompleted={() => {
                 setActiveClientAssessmentFormId(null);
               }}
@@ -542,6 +558,7 @@ export default function App() {
 
           <ClientRegistration
             onRegistrationComplete={handleIntakeComplete}
+            onClientLogin={() => navigateTo('client-login')}
           />
         </main>
 

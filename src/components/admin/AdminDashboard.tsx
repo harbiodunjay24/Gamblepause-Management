@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   UserCheck,
@@ -37,6 +37,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [selectedState, setSelectedState] = useState<string>('all');
   const [selectedGender, setSelectedGender] = useState<string>('all');
   const [scanResult, setScanResult] = useState<string | null>(null);
+
+  // Live real-time subscription for Firestore client records
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const unsub = dataService.subscribe(() => {
+      setTick((t) => t + 1);
+    });
+    return () => unsub();
+  }, []);
 
   const rawClients = dataService.getClients();
   const staff = dataService.getStaff();

@@ -14,6 +14,7 @@ import {
 import { Client, WorkflowStage, FormDefinition } from '../../types';
 import { dataService } from '../../services/dataService';
 import { AuthUser } from '../../services/authService';
+import { auth } from '../../lib/firebase';
 
 interface ClientPortalProps {
   user: AuthUser;
@@ -32,15 +33,38 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Only fetch the authenticated client's record!
-    if (user.clientId) {
-      const c = dataService.getClientById(user.clientId);
-      setClient(c || null);
+    let isMounted = true;
+
+    async function loadClientRecord() {
+      setIsLoading(true);
+      const authUid = auth.currentUser?.uid || user.id;
+
+      let foundClient: Client | undefined = undefined;
+
+      // 1. Authoritative lookup: query Firestore for where client.authUid == auth.currentUser.uid
+      if (authUid) {
+        foundClient = await dataService.getClientByAuthUid(authUid);
+      }
+
+      // 2. Fallback by user.clientId if not resolved by authUid
+      if (!foundClient && user.clientId) {
+        foundClient = dataService.getClientById(user.clientId);
+      }
+
+      if (isMounted) {
+        setClient(foundClient || null);
+        setWorkflows(dataService.getWorkflows());
+        setForms(dataService.getForms());
+        setIsLoading(false);
+      }
     }
-    setWorkflows(dataService.getWorkflows());
-    setForms(dataService.getForms());
-    setIsLoading(false);
-  }, [user.clientId]);
+
+    loadClientRecord();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user.clientId, user.id]);
 
   if (isLoading) {
     return (
@@ -61,12 +85,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           <p className="text-sm text-gray-500">
             We could not find an active client profile associated with your login credentials.
           </p>
-          <button
-            onClick={onLogout}
-            className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors cursor-pointer shadow-xs"
-          >
-            Sign Out
-          </button>
+          <div className="pt-2 space-y-2">
+            <a
+              href="/intake"
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.href = '/intake';
+              }}
+              className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors cursor-pointer shadow-xs block text-center"
+            >
+              Complete Client Registration
+            </a>
+            <button
+              onClick={onLogout}
+              className="w-full py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-bold transition-colors cursor-pointer"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -76,8 +112,30 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const completedFormIds = new Set(submissions.map((s) => s.formId));
 
   // Determine current active/ready assessment form
-  const activeFormId = client.nextAssessmentId || 'form-recovery-1';
-  const activeForm = forms.find((f) => f.id === activeFormId);
+  const activeFormId = client.nextAssessmentId === 'form-initial' ? 'form-recovery-1' : (client.nextAssessmentId || 'form-recovery-1');
+  const activeForm = forms.find((f) => f.id === activeFormId) || forms.find((f) => f.id === 'form-recovery-1') || forms[0];
+
+  // Clinical assessment stages only (Registration/Biodata is already displayed above as completed)
+  const assessmentStages = workflows.filter((stage) => {
+    const sName = (stage.stageName || '').toLowerCase().trim();
+    const sId = (stage.id || '').toLowerCase().trim();
+    const fId = (stage.formId || '').toLowerCase().trim();
+    if (
+      sName === 'client registration / biodata' ||
+      sName === 'registration & biodata' ||
+      sName === 'client registration' ||
+      sName === 'registration' ||
+      sName === 'biodata' ||
+      sId === 'stage-registration' ||
+      sId === 'stage-biodata' ||
+      fId === 'biodata' ||
+      fId === 'form-biodata' ||
+      fId === 'form-registration'
+    ) {
+      return false;
+    }
+    return true;
+  });
 
   // Check whether next assessment is currently due
   const isAssessmentDue =
@@ -217,10 +275,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
 
             {/* Assessment Stages */}
-            {workflows.map((stage, idx) => {
-              const formDef = forms.find((f) => f.id === stage.formId);
+            {assessmentStages.map((stage, idx) => {
+              const formDef = forms.find((f) => f.id === stage.formId) ||
+                (stage.id === 'stage-initial' || stage.formId === 'form-recovery-1' ? forms.find((f) => f.id === 'form-recovery-1') : undefined);
               const isCompleted = formDef ? completedFormIds.has(formDef.id) : false;
-              const isCurrent = client.nextAssessmentId === stage.formId || client.currentStageId === stage.id;
+              const isCurrent =
+                client.nextAssessmentId === stage.formId ||
+                client.currentStageId === stage.id ||
+                (stage.id === 'stage-initial' && (!client.nextAssessmentId || client.nextAssessmentId === 'form-initial' || client.nextAssessmentId === 'form-recovery-1'));
               const isLocked = !isCompleted && !isCurrent;
 
               return (
@@ -282,7 +344,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       </span>
                     ) : isCurrent && isAssessmentDue ? (
                       <button
-                        onClick={() => onStartAssessment(stage.formId)}
+                        onClick={() => onStartAssessment(stage.formId === 'form-initial' ? 'form-recovery-1' : (stage.formId || activeFormId || 'form-recovery-1'))}
                         className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
                       >
                         Start Now

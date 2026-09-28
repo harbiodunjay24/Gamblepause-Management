@@ -195,11 +195,11 @@ export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
   {
     id: 'stage-initial',
     formId: 'form-recovery-1',
-    stageName: 'Initial Assessment (Recovery 1)',
+    stageName: 'Initial Assessment',
     order: 1,
     delayDaysFromPrevious: 0, // Ready immediately upon biodata registration
     description: 'Baseline clinical assessment, gambling budget, Exercise 1.0, and diagnostic screening.',
-    isInitialRegistration: true,
+    isInitialRegistration: false,
   },
   {
     id: 'stage-assessment-2',

@@ -485,7 +485,25 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
               </div>
 
               {/* Assessment Stages */}
-              {workflows.filter((w) => !w.isInitialRegistration).map((stage, idx) => {
+              {workflows.filter((w) => {
+                const name = (w.stageName || '').toLowerCase().trim();
+                const id = (w.id || '').toLowerCase().trim();
+                const formId = (w.formId || '').toLowerCase().trim();
+                if (
+                  name === 'client registration / biodata' ||
+                  name === 'registration & biodata' ||
+                  name === 'client registration' ||
+                  name === 'registration' ||
+                  name === 'biodata' ||
+                  id === 'stage-registration' ||
+                  id === 'stage-biodata' ||
+                  formId === 'biodata' ||
+                  formId === 'form-biodata'
+                ) {
+                  return false;
+                }
+                return true;
+              }).map((stage, idx) => {
                 const isCompleted = client.totalAssessmentsCompleted > idx;
                 const isCurrent = stage.id === client.currentStageId;
                 const submission = submissions.find((s) => s.stageId === stage.id || s.formId === stage.formId);

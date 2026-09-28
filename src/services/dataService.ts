@@ -23,8 +23,19 @@ import {
   INITIAL_ASSIGNMENTS,
 } from '../data/demoData';
 import { authService, AuthUser } from './authService';
-import { db } from '../lib/firebase';
-import { doc, updateDoc, collection, addDoc } from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '../lib/firebase';
+import {
+  doc,
+  updateDoc,
+  collection,
+  addDoc,
+  setDoc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  where,
+} from 'firebase/firestore';
 
 const STORAGE_KEYS = {
   CLIENTS: 'gamblepause_clients',
@@ -51,16 +62,116 @@ class DataService {
   private listeners: Set<() => void> = new Set();
   private statusListeners: Set<(client: Client, oldStatus: ClientStatus, newStatus: ClientStatus) => void> = new Set();
   private eventSource: EventSource | null = null;
+  private firestoreClientsUnsubscribe: (() => void) | null = null;
+  private firestoreSyncActive: boolean = false;
 
   constructor() {
     this.loadFromStorage();
     this.cleanseStaleStaff();
+    this.cleanseWorkflows();
+    this.syncClientsFromFirestore();
     this.syncWithBackend();
     this.initRealtimeEvents();
-    // Re-notify whenever auth state changes
-    authService.subscribe(() => {
+    // Re-sync with Firestore whenever auth state changes (e.g. login/logout)
+    authService.subscribe((user) => {
+      if (user) {
+        this.syncClientsFromFirestore();
+      }
       this.notify();
     });
+  }
+
+  /**
+   * Authoritative real-time and snapshot retrieval of real clients from Cloud Firestore
+   */
+  public async syncClientsFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) {
+      console.warn('[DataService] Firestore db instance not available for sync.');
+      return;
+    }
+
+    try {
+      const clientsCol = collection(db, 'clients');
+      const snap = await getDocs(clientsCol);
+      const firestoreClients: Client[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data() as Client;
+        if (data && data.id) {
+          firestoreClients.push({
+            ...data,
+            isDemo: false,
+          });
+        }
+      });
+
+      if (firestoreClients.length > 0) {
+        this.mergeFirestoreClients(firestoreClients);
+      }
+
+      // Refresh real-time snapshot listener
+      if (this.firestoreClientsUnsubscribe) {
+        this.firestoreClientsUnsubscribe();
+        this.firestoreClientsUnsubscribe = null;
+      }
+
+      this.firestoreClientsUnsubscribe = onSnapshot(
+        clientsCol,
+        (snapshot) => {
+          const realtimeClients: Client[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as Client;
+            if (data && data.id) {
+              realtimeClients.push({
+                ...data,
+                isDemo: false,
+              });
+            }
+          });
+          if (realtimeClients.length > 0) {
+            this.mergeFirestoreClients(realtimeClients);
+          }
+        },
+        (err) => {
+          console.warn('[DataService] Firestore real-time clients listener warning:', err?.message || err);
+        }
+      );
+      this.firestoreSyncActive = true;
+    } catch (err: any) {
+      console.warn('[DataService] Firestore clients sync notice:', err?.message || err);
+    }
+  }
+
+  /**
+   * Merges real Firestore clients authoritatively while preserving local demo data without migration
+   */
+  private mergeFirestoreClients(firestoreClients: Client[]): void {
+    if (!Array.isArray(firestoreClients) || firestoreClients.length === 0) return;
+
+    const clientMap = new Map<string, Client>();
+
+    // 1. Preserve existing demo records in memory for demo testing
+    for (const existing of this.clients) {
+      if (existing.isDemo) {
+        clientMap.set(existing.id, existing);
+      }
+    }
+
+    // 2. Merge authoritative real client records from Firestore
+    for (const fc of firestoreClients) {
+      clientMap.set(fc.id, {
+        ...fc,
+        isDemo: false,
+      });
+    }
+
+    this.clients = Array.from(clientMap.values()).sort((a, b) => {
+      const timeA = new Date(a.registrationDate).getTime() || 0;
+      const timeB = new Date(b.registrationDate).getTime() || 0;
+      return timeB - timeA;
+    });
+
+    this.saveToStorage();
+    this.notify();
   }
 
   private cleanseStaleStaff() {
@@ -91,6 +202,66 @@ class DataService {
         this.staff[idx].role = 'Counsellor';
         this.staff[idx].active = this.staff[idx].active !== false;
       }
+    }
+  }
+
+  /**
+   * Cleanses the assessment pipeline so that client registration/biodata (which is already
+   * permanently recorded during signup/intake) does not appear as an artificial locked assessment stage.
+   */
+  private cleanseWorkflows() {
+    const prevCount = this.workflows.length;
+
+    // 1. Strip any redundant standalone registration / biodata stages
+    this.workflows = this.workflows.filter((w) => {
+      const name = (w.stageName || '').toLowerCase().trim();
+      const id = (w.id || '').toLowerCase().trim();
+      const formId = (w.formId || '').toLowerCase().trim();
+      if (
+        name === 'client registration / biodata' ||
+        name === 'registration & biodata' ||
+        name === 'client registration' ||
+        name === 'registration' ||
+        name === 'biodata' ||
+        id === 'stage-registration' ||
+        id === 'stage-biodata' ||
+        formId === 'biodata' ||
+        formId === 'form-biodata' ||
+        formId === 'form-registration'
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    // 2. Ensure the Initial Assessment stage exists
+    const hasInitial = this.workflows.some((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1');
+    if (!hasInitial) {
+      this.workflows.unshift({
+        id: 'stage-initial',
+        formId: 'form-recovery-1',
+        stageName: 'Initial Assessment',
+        order: 1,
+        delayDaysFromPrevious: 0,
+        description: 'Baseline clinical assessment, gambling budget, Exercise 1.0, and diagnostic screening.',
+        isInitialRegistration: false,
+      });
+    }
+
+    // 3. Ensure proper sequential ordering and non-registration flag
+    this.workflows.forEach((w, idx) => {
+      w.order = idx + 1;
+      if (w.id === 'stage-initial' || w.formId === 'form-recovery-1') {
+        w.delayDaysFromPrevious = 0;
+        w.isInitialRegistration = false;
+        if (!w.stageName || w.stageName.toLowerCase().includes('registration')) {
+          w.stageName = 'Initial Assessment';
+        }
+      }
+    });
+
+    if (this.workflows.length !== prevCount) {
+      this.saveToStorage();
     }
   }
 
@@ -237,6 +408,7 @@ class DataService {
       this.notifications = storedNotifs ? JSON.parse(storedNotifs) : [...INITIAL_NOTIFICATIONS];
       this.auditLogs = storedAudit ? JSON.parse(storedAudit) : [...INITIAL_AUDIT_LOGS];
       this.counsellorAssignments = storedAssignments ? JSON.parse(storedAssignments) : [...INITIAL_ASSIGNMENTS];
+      this.cleanseWorkflows();
     } catch (e) {
       console.error('Error loading data from localStorage, resetting to defaults', e);
       this.resetToDefaults();
@@ -367,8 +539,8 @@ class DataService {
     }
 
     if (user.role === 'Client') {
-      // Client sees ONLY their own client record
-      return this.clients.filter((c) => c.id === user.clientId);
+      // Client sees ONLY their own client record (by clientId or matching authUid)
+      return this.clients.filter((c) => c.id === user.clientId || c.authUid === user.id);
     }
 
     if (user.role === 'Staff' || user.role === 'Analyst / Viewer') {
@@ -376,6 +548,40 @@ class DataService {
     }
 
     return [];
+  }
+
+  /**
+   * Authoritative lookup of client profile by authenticated Firebase UID
+   * Uses query where('authUid', '==', authUid) directly against Firestore
+   */
+  public async getClientByAuthUid(authUid: string): Promise<Client | undefined> {
+    if (!authUid) return undefined;
+
+    // First check in-memory cache
+    const existing = this.clients.find((c) => c.authUid === authUid && !c.isDemo);
+
+    if (db && isFirebaseConfigured) {
+      try {
+        const q = query(collection(db, 'clients'), where('authUid', '==', authUid));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const docSnap = snap.docs[0];
+          const data = docSnap.data() as Client;
+          if (data && data.id) {
+            const clientRecord: Client = {
+              ...data,
+              isDemo: false,
+            };
+            this.mergeFirestoreClients([clientRecord]);
+            return clientRecord;
+          }
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Error querying client by authUid:', err?.message || err);
+      }
+    }
+
+    return existing;
   }
 
   public getClientById(id: string): Client | undefined {
@@ -391,9 +597,9 @@ class DataService {
     }
 
     if (user.role === 'Client') {
-      // Client can ONLY view their own client ID
-      if (user.clientId === client.id) return client;
-      // TEST 7: ACCESS DENIED when querying another client ID
+      // Client can view their own client ID or record matching their auth UID
+      if (user.clientId === client.id || client.authUid === user.id) return client;
+      // Access denied when querying another client ID
       return undefined;
     }
 
@@ -474,7 +680,7 @@ class DataService {
     return `GP-${String(nextNum).padStart(4, '0')}`;
   }
 
-  public registerClient(biodata: {
+  public async registerClient(biodata: {
     firstName: string;
     lastName: string;
     preferredName?: string;
@@ -489,41 +695,93 @@ class DataService {
     howHeard: string;
     emergencyContact?: { name: string; relationship: string; phone: string };
     consentGiven: boolean;
-  }): Client {
-    const newId = this.generateNextClientId();
-    const secureKey = `sec_${newId.toLowerCase().replace('-', '')}_${Math.random().toString(36).substring(2, 10)}`;
+    authUid?: string;
+  }): Promise<Client> {
+    // If Super Admin is active, fetch current clients to guarantee correct non-colliding client ID
+    if (db && isFirebaseConfigured && authService.isSuperAdmin()) {
+      try {
+        const snap = await getDocs(collection(db, 'clients'));
+        const remoteClients: Client[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Client;
+          if (d && d.id) {
+            remoteClients.push({
+              ...d,
+              isDemo: false,
+            });
+          }
+        });
+        if (remoteClients.length > 0) {
+          this.mergeFirestoreClients(remoteClients);
+        }
+      } catch (e) {
+        console.warn('[Firestore] Pre-registration client query notice:', e);
+      }
+    }
+
+    // Check if client record already exists for this authenticated UID
+    let existingClient: Client | undefined;
+    if (biodata.authUid) {
+      existingClient = await this.getClientByAuthUid(biodata.authUid);
+    }
+
+    const clientId = existingClient?.id || this.generateNextClientId();
+    const secureKey = existingClient?.secureAccessKey || `sec_${clientId.toLowerCase().replace('-', '')}_${Math.random().toString(36).substring(2, 10)}`;
     const now = new Date().toISOString();
 
     // Assign a counsellor evenly
     const activeCounsellors = this.staff.filter((s) => s.role === 'Counsellor' || s.role === 'Super Admin');
-    const assignedCounsellor = activeCounsellors.length > 0
-      ? activeCounsellors[this.clients.length % activeCounsellors.length]
-      : undefined;
+    const assignedCounsellor = existingClient?.assignedCounsellorId
+      ? this.staff.find((s) => s.id === existingClient?.assignedCounsellorId)
+      : (activeCounsellors.length > 0 ? activeCounsellors[this.clients.length % activeCounsellors.length] : undefined);
 
     // Determine initial assessment
-    const initialStage = this.workflows.find((w) => w.id === 'stage-initial') || this.workflows[1];
-    const initialForm = this.forms.find((f) => f.id === initialStage?.formId || f.code === 'initial_assessment') || this.forms[0];
+    const initialStage = this.workflows.find((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1') || this.workflows[0];
+    const initialForm = this.forms.find((f) => f.id === initialStage?.formId || f.id === 'form-recovery-1' || f.code === 'initial_assessment') || this.forms[0];
 
     const newClient: Client = {
-      id: newId,
+      ...(existingClient || {}),
+      id: clientId,
       ...biodata,
-      registrationDate: now,
+      registrationDate: existingClient?.registrationDate || now,
       status: 'Active',
-      currentStageId: initialStage?.id || 'stage-initial',
-      currentStageName: initialStage?.stageName || 'Initial Assessment',
-      nextAssessmentId: initialForm?.id,
-      nextAssessmentName: initialForm?.name || 'Initial Assessment',
-      nextAssessmentDueDate: now, // ready immediately upon registration
-      assignedCounsellorId: assignedCounsellor?.id,
-      assignedCounsellorName: assignedCounsellor?.name,
+      currentStageId: existingClient?.currentStageId || initialStage?.id || 'stage-initial',
+      currentStageName: existingClient?.currentStageName || initialStage?.stageName || 'Initial Assessment',
+      nextAssessmentId: existingClient?.nextAssessmentId || initialForm?.id,
+      nextAssessmentName: existingClient?.nextAssessmentName || initialForm?.name || 'Initial Assessment',
+      nextAssessmentDueDate: existingClient?.nextAssessmentDueDate || now, // ready immediately upon registration
+      assignedCounsellorId: existingClient?.assignedCounsellorId || assignedCounsellor?.id,
+      assignedCounsellorName: existingClient?.assignedCounsellorName || assignedCounsellor?.name,
       lastActivityDate: now,
-      totalAssessmentsCompleted: 0,
-      totalAssessmentsOverdue: 0,
-      riskLevel: 'Medium',
+      totalAssessmentsCompleted: existingClient?.totalAssessmentsCompleted || 0,
+      totalAssessmentsOverdue: existingClient?.totalAssessmentsOverdue || 0,
+      riskLevel: existingClient?.riskLevel || 'Medium',
       secureAccessKey: secureKey,
+      isDemo: false,
     };
 
-    this.clients.unshift(newClient);
+    // Authoritative Cloud Firestore write: Await and verify BEFORE local storage persistence
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'clients', newClient.id), newClient, { merge: true });
+        console.log(`[Firestore] Client ${newClient.id} successfully written and verified in Firestore.`);
+      } catch (err: any) {
+        console.error('[Firestore] Register client sync error:', err);
+        const isPermDenied = err?.code === 'permission-denied' || err?.message?.includes('permission-denied');
+        if (isPermDenied) {
+          throw new Error('Firestore Authorization Error (permission-denied): Security rules rejected creating client document for this authenticated account.');
+        }
+        throw new Error(`Failed to save client record to Firestore database (${err?.code || err?.message || err}).`);
+      }
+    }
+
+    // Only once Firestore write is confirmed, update in-memory and local state
+    const existingIndex = this.clients.findIndex((c) => c.id === newClient.id);
+    if (existingIndex >= 0) {
+      this.clients[existingIndex] = newClient;
+    } else {
+      this.clients.unshift(newClient);
+    }
 
     // Create a welcoming notification
     this.queueNotification({
@@ -565,7 +823,7 @@ class DataService {
     }
 
     // Automatically provision client login credentials in authService
-    authService.registerClientCredentials(
+    await authService.registerClientCredentials(
       newClient.id,
       newClient.email,
       newClient.firstName,
@@ -604,6 +862,18 @@ class DataService {
       }).catch((e) => console.warn('[Backend] Update status sync error:', e));
     } catch (e) {
       console.warn('[Backend] Fetch update status error:', e);
+    }
+
+    // Authoritative Cloud Firestore status sync
+    if (db && isFirebaseConfigured && !client.isDemo) {
+      try {
+        updateDoc(doc(db, 'clients', clientId), {
+          status,
+          lastActivityDate: client.lastActivityDate,
+        }).catch((err) => console.warn('[Firestore] Update status sync error:', err));
+      } catch (err) {
+        console.warn('[Firestore] Update status exception:', err);
+      }
     }
 
     if (oldStatus !== status) {
@@ -896,7 +1166,25 @@ class DataService {
 
   // --- Workflows ---
   public getWorkflows(): WorkflowStage[] {
-    return [...this.workflows].sort((a, b) => a.order - b.order);
+    return [...this.workflows]
+      .filter((w) => {
+        const name = (w.stageName || '').toLowerCase().trim();
+        const id = (w.id || '').toLowerCase().trim();
+        const formId = (w.formId || '').toLowerCase().trim();
+        return !(
+          name === 'client registration / biodata' ||
+          name === 'registration & biodata' ||
+          name === 'client registration' ||
+          name === 'registration' ||
+          name === 'biodata' ||
+          id === 'stage-registration' ||
+          id === 'stage-biodata' ||
+          formId === 'biodata' ||
+          formId === 'form-biodata' ||
+          formId === 'form-registration'
+        );
+      })
+      .sort((a, b) => a.order - b.order);
   }
 
   public saveWorkflows(workflows: WorkflowStage[]) {

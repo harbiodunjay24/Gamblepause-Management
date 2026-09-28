@@ -65,9 +65,9 @@ export const PublicHome: React.FC<PublicHomeProps> = ({
               </div>
               <ArrowRight className="w-5 h-5 opacity-85 group-hover:opacity-100 group-hover:translate-x-1 transition-all" />
             </div>
-            <span className="text-lg font-black tracking-tight">Start Intake Form</span>
+            <span className="text-lg font-black tracking-tight">Start Assessment Drive</span>
             <span className="text-xs text-white/90 mt-1 font-medium">
-              New client? Register in less than 3 minutes to begin your confidential recovery assessment.
+              Register with Firebase in less than 3 minutes to begin your confidential recovery assessment.
             </span>
           </button>
 

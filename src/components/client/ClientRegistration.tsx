@@ -1,14 +1,51 @@
-import React, { useState } from 'react';
-import { ShieldCheck, HeartHandshake, CheckCircle2, AlertCircle, ArrowRight, Lock, User, MapPin, Phone, Mail } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  ShieldCheck,
+  HeartHandshake,
+  CheckCircle2,
+  AlertCircle,
+  ArrowRight,
+  Lock,
+  User,
+  MapPin,
+  Phone,
+  Mail,
+  UserPlus,
+  LogIn,
+  Eye,
+  EyeOff,
+  LogOut,
+} from 'lucide-react';
 import { NIGERIAN_STATES } from '../../data/demoData';
 import { dataService } from '../../services/dataService';
+import { authService, AuthUser } from '../../services/authService';
+import { auth } from '../../lib/firebase';
 import { Client } from '../../types';
 
 interface ClientRegistrationProps {
   onRegistrationComplete: (client: Client, startImmediateAssessment: boolean) => void;
+  onClientLogin?: () => void;
 }
 
-export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegistrationComplete }) => {
+export const ClientRegistration: React.FC<ClientRegistrationProps> = ({
+  onRegistrationComplete,
+  onClientLogin,
+}) => {
+  // Authentication status
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => authService.getCurrentUser());
+  const [existingClientRecord, setExistingClientRecord] = useState<Client | null>(null);
+
+  // Firebase Auth Form State (New Intake Account Registration)
+  const [authFullName, setAuthFullName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
+  // Drive Biodata Form State
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -30,7 +67,126 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showConsentModal, setShowConsentModal] = useState(false);
+
+  const populateFromFullNameAndEmail = (fullName: string, email: string) => {
+    const parts = fullName.trim().split(/\s+/).filter(Boolean);
+    const fName = parts[0] || '';
+    const lName = parts.slice(1).join(' ') || '';
+    setFormData((prev) => ({
+      ...prev,
+      firstName: prev.firstName || fName,
+      lastName: prev.lastName || lName,
+      email: email ? email.trim().toLowerCase() : prev.email,
+    }));
+  };
+
+  // Sync auth state and pre-populate biodata
+  useEffect(() => {
+    const unsub = authService.subscribe((user) => {
+      setCurrentUser(user);
+      if (user) {
+        const userDisplayName = user.name || auth.currentUser?.displayName || '';
+        const userEmail = auth.currentUser?.email || user.email || '';
+        populateFromFullNameAndEmail(userDisplayName, userEmail);
+      }
+    });
+
+    if (currentUser) {
+      const userDisplayName = currentUser.name || auth.currentUser?.displayName || '';
+      const userEmail = auth.currentUser?.email || currentUser.email || '';
+      populateFromFullNameAndEmail(userDisplayName, userEmail);
+    } else if (auth.currentUser) {
+      const fbUser = auth.currentUser;
+      const userDisplayName = fbUser.displayName || '';
+      const userEmail = fbUser.email || '';
+      if (userDisplayName || userEmail) {
+        populateFromFullNameAndEmail(userDisplayName, userEmail);
+      }
+    }
+
+    return () => unsub();
+  }, [currentUser]);
+
+  // Check if authenticated user already has an active client record
+  useEffect(() => {
+    let isMounted = true;
+    async function checkExistingClient() {
+      const authUid = auth.currentUser?.uid || currentUser?.id;
+      if (authUid) {
+        const client = await dataService.getClientByAuthUid(authUid);
+        if (isMounted && client) {
+          setExistingClientRecord(client);
+        }
+      }
+    }
+    checkExistingClient();
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser]);
+
+  // Handle Firebase Register for New Intake
+  const handleAuthRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthSuccess(null);
+
+    const trimmedFullName = authFullName.trim();
+    if (!trimmedFullName) {
+      setAuthError('Please enter your full name.');
+      return;
+    }
+
+    const cleanEmail = authEmail.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthError('PASSWORD OR EMAIL INCORRECT');
+      return;
+    }
+    if (!authPassword || authPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters long.');
+      return;
+    }
+    if (authPassword !== authConfirmPassword) {
+      setAuthError('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    // Split Full Name into First Name and Last Name for automatic population
+    const nameParts = trimmedFullName.split(/\s+/).filter(Boolean);
+    const fName = nameParts[0] || '';
+    const lName = nameParts.slice(1).join(' ') || '';
+
+    setIsAuthLoading(true);
+    try {
+      const res = await authService.firebaseRegister(cleanEmail, authPassword, trimmedFullName, 'Client');
+      if (res.success && res.user) {
+        // Immediately set user and pre-populate biodata form
+        setCurrentUser(res.user);
+        setFormData((prev) => ({
+          ...prev,
+          firstName: fName,
+          lastName: lName,
+          email: cleanEmail,
+        }));
+        setAuthSuccess('Account created successfully! Continuing to your intake form...');
+      } else {
+        // As explicitly required: IF A USER IS WITH THOSE CREDENTIALS ALREADY EXISTS DISPLAY ' USER ALREADY EXISTS ,SIGN IN
+        if (res.error?.includes('ALREADY EXISTS') || res.error?.includes('email-already-in-use')) {
+          setAuthError(' USER ALREADY EXISTS ,SIGN IN');
+        } else {
+          setAuthError(res.error || 'Registration failed. Please try again.');
+        }
+      }
+    } catch (err: any) {
+      if (err.message?.includes('already-in-use') || err.code === 'auth/email-already-in-use') {
+        setAuthError(' USER ALREADY EXISTS ,SIGN IN');
+      } else {
+        setAuthError(err.message || 'Registration failed. Please try again.');
+      }
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
@@ -47,11 +203,12 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
         newErrors.age = 'Please enter an age between 1 and 100.';
       }
     }
+    const effectiveEmail = (auth.currentUser?.email || currentUser?.email || formData.email).trim().toLowerCase();
     if (!formData.phone.trim()) {
       newErrors.phone = 'Phone number is required for follow-up reminders.';
     }
-    if (!formData.email.trim() || !formData.email.includes('@')) {
-      newErrors.email = 'Please enter a valid email address.';
+    if (!effectiveEmail || !effectiveEmail.includes('@')) {
+      newErrors.email = 'Valid authenticated email address required.';
     }
     if (!formData.state) newErrors.state = 'Please select your state.';
     if (!formData.location.trim()) newErrors.location = 'Please provide your city area or LGA.';
@@ -64,23 +221,44 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent, startImmediate: boolean) => {
+  const handleSubmit = async (e: React.FormEvent, startImmediate: boolean) => {
     e.preventDefault();
     if (!validate()) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
+    // Authenticated Firebase user MUST exist before creating a client document
+    const fbUser = auth.currentUser;
+    if (!fbUser) {
+      setErrors({
+        form: 'Your authentication session has expired. Please sign in again using the account switcher above.',
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const authenticatedUid = fbUser.uid;
+    const authenticatedEmail = (fbUser.email || '').trim().toLowerCase();
+
+    if (!authenticatedEmail) {
+      setErrors({
+        form: 'Your authenticated account does not have a valid email address. Please switch account and re-authenticate.',
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      const newClient = dataService.registerClient({
+      const newClient = await dataService.registerClient({
         firstName: formData.firstName.trim(),
         lastName: formData.lastName.trim(),
         preferredName: formData.preferredName.trim() || undefined,
         age: parseInt(formData.age, 10),
         gender: formData.gender,
         phone: formData.phone.trim(),
-        email: formData.email.trim().toLowerCase(),
+        email: authenticatedEmail, // Authenticated Firebase email is the single source of truth
         state: formData.state,
         location: formData.location.trim(),
         occupation: formData.occupation.trim(),
@@ -94,34 +272,46 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
             }
           : undefined,
         consentGiven: formData.consentGiven,
+        authUid: authenticatedUid, // Authenticated Firebase UID is the single source of truth
       });
 
       onRegistrationComplete(newClient, startImmediate);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Registration failed:', err);
-      setErrors({ form: 'An error occurred during registration. Please try again.' });
+      const isPermissionDenied =
+        err?.code === 'permission-denied' ||
+        err?.message?.includes('permission-denied') ||
+        err?.message?.includes('Missing or insufficient permissions');
+
+      if (isPermissionDenied) {
+        setErrors({
+          form: 'Firestore Authorization Error (permission-denied): Security rules rejected client creation for your authenticated account. Please ensure you are signed in with a valid account.',
+        });
+      } else {
+        setErrors({ form: err?.message || 'An error occurred during registration. Please try again.' });
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8 sm:py-12">
+    <div className="max-w-2xl mx-auto px-4 py-8 sm:py-12 font-sans">
       {/* Intro hero card */}
-      <div className="bg-white rounded-2xl p-6 sm:p-8 border border-gray-200 shadow-sm mb-6 text-center sm:text-left">
-        <div className="inline-flex items-center gap-2 bg-red-50 text-red-700 px-3 py-1 rounded-full text-xs font-semibold mb-4 border border-red-100">
+      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-sm mb-6 text-center sm:text-left">
+        <div className="inline-flex items-center gap-2 bg-red-50 text-red-700 px-3.5 py-1 rounded-full text-xs font-bold mb-4 border border-red-100">
           <HeartHandshake className="w-4 h-4 text-red-600" />
-          <span>Step 1 of Your Recovery Pathway</span>
+          <span>GamblePause Harm Reduction Drive</span>
         </div>
 
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-950 tracking-tight">
-          GamblePause Client Assessment
+        <h1 className="text-2xl sm:text-3xl font-black text-gray-950 tracking-tight">
+          Client Assessment & Recovery Drive
         </h1>
 
         <p className="mt-2.5 text-gray-600 text-sm sm:text-base leading-relaxed">
-          Welcome. We understand that stepping back from gambling takes genuine courage.
-          The information you provide here will be used by our trained, non-judgmental counsellors
-          to tailor your personal pause journey and follow-up support.
+          Welcome to the GamblePause Assessment Drive. We provide confidential, evidence-based
+          support to help you or your family navigate recovery from gambling harms.
         </p>
 
         <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-500">
@@ -136,20 +326,251 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
         </div>
       </div>
 
-      {/* Main Biodata Form */}
+      {/* GATE: If user is not authenticated, show Firebase Account Registration Flow */}
+      {!currentUser ? (
+        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-md mb-6">
+          <div className="text-center space-y-2 mb-6">
+            <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center mx-auto shadow-sm font-black text-lg">
+              GP
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-gray-950">
+              Create Your Account
+            </h2>
+            <p className="text-xs text-gray-600 max-w-md mx-auto">
+              Register your account to begin your confidential assessment and access your recovery portal.
+            </p>
+          </div>
+
+          {/* Error Message */}
+          {authError && (
+            <div className="mb-5 p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span className="font-black text-sm uppercase tracking-wide">{authError}</span>
+              </div>
+              {authError.includes('USER ALREADY EXISTS') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onClientLogin) {
+                      onClientLogin();
+                    } else {
+                      window.location.href = '/client/login';
+                    }
+                  }}
+                  className="mt-1 self-start inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition-colors cursor-pointer"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Go to Client Login</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Success Message */}
+          {authSuccess && (
+            <div className="mb-5 p-3.5 rounded-xl bg-green-50 border border-green-200 text-green-800 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
+              <span className="font-bold">{authSuccess}</span>
+            </div>
+          )}
+
+          {/* Account Registration Form */}
+          <form onSubmit={handleAuthRegister} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                Full Name
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
+                  <User className="w-4 h-4" />
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={authFullName}
+                  onChange={(e) => setAuthFullName(e.target.value)}
+                  placeholder="e.g. Abiodun Ayodeji"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-gray-50 border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                Email Address
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
+                  <Mail className="w-4 h-4" />
+                </div>
+                <input
+                  type="email"
+                  required
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-gray-50 border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                Create Password (min 6 characters)
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
+                  <Lock className="w-4 h-4" />
+                </div>
+                <input
+                  type={showAuthPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Enter password"
+                  className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-gray-50 border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAuthPassword(!showAuthPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600"
+                >
+                  {showAuthPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                Confirm Password
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
+                  <Lock className="w-4 h-4" />
+                </div>
+                <input
+                  type={showAuthPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={authConfirmPassword}
+                  onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                  placeholder="Re-enter password"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-gray-50 border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isAuthLoading}
+              className="w-full py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md shadow-red-600/20 transition-all disabled:opacity-50 cursor-pointer mt-2"
+            >
+              {isAuthLoading ? 'Creating Firebase Account...' : 'Register & Begin Assessment'}
+            </button>
+          </form>
+
+          {/* Existing client option */}
+          <div className="mt-6 pt-5 border-t border-gray-100 text-center">
+            <p className="text-xs text-gray-600">
+              Already registered?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  if (onClientLogin) {
+                    onClientLogin();
+                  } else {
+                    window.location.href = '/client/login';
+                  }
+                }}
+                className="font-bold text-red-600 hover:text-red-700 underline cursor-pointer"
+              >
+                Sign In to Client Portal
+              </button>
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Authenticated Status Banner */
+        <div className="space-y-4 mb-6">
+          <div className="bg-red-50/60 border border-red-200/80 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-red-600 text-white flex items-center justify-center font-bold text-xs">
+                {(currentUser.name || auth.currentUser?.displayName || 'U').charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <div className="text-xs font-black text-gray-950 flex items-center gap-1.5">
+                  <span>Authenticated with Firebase</span>
+                  <span className="w-2 h-2 rounded-full bg-green-500" />
+                </div>
+                <p className="text-xs text-gray-600">
+                  Signed in as <strong className="text-gray-900 font-semibold">{auth.currentUser?.email || currentUser.email}</strong>
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                authService.logout();
+                setCurrentUser(null);
+                setExistingClientRecord(null);
+              }}
+              className="inline-flex items-center gap-1 text-xs font-bold text-gray-600 hover:text-red-600 bg-white border border-gray-200 px-3 py-1.5 rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Switch Account</span>
+            </button>
+          </div>
+
+          {existingClientRecord && (
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="text-blue-900 font-medium">
+                  Active Client Profile: <strong className="font-bold">{existingClientRecord.firstName} {existingClientRecord.lastName}</strong> ({existingClientRecord.id})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onClientLogin) {
+                    onClientLogin();
+                  } else {
+                    window.location.href = '/client';
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition-colors cursor-pointer"
+              >
+                Go to Client Portal
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Main Biodata Form: Available when authenticated */}
       <form
         onSubmit={(e) => handleSubmit(e, true)}
-        className="bg-white rounded-2xl p-6 sm:p-8 border border-gray-200 shadow-sm space-y-6"
+        className={`bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-sm space-y-6 transition-opacity ${
+          !currentUser ? 'opacity-40 pointer-events-none' : 'opacity-100'
+        }`}
         id="client-biodata-form"
       >
-        <div className="border-b border-gray-100 pb-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <User className="w-5 h-5 text-red-600" />
-            <span>Personal Biodata</span>
-          </h2>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Please provide accurate details so your counsellor can reach you with reminders and care.
-          </p>
+        <div className="border-b border-gray-100 pb-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+              <User className="w-5 h-5 text-red-600" />
+              <span>Assessment Drive Details</span>
+            </h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Please verify your personal biodata for your clinical recovery record.
+            </p>
+          </div>
+          <span className="text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-700 px-2 py-0.5 rounded border border-red-200">
+            Step 2
+          </span>
         </div>
 
         {errors.form && (
@@ -247,7 +668,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
                 key={genderOption}
                 className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all ${
                   formData.gender === genderOption
-                    ? 'border-red-600 bg-red-50 text-red-700 shadow-sm'
+                    ? 'border-red-600 bg-red-50 text-red-700 shadow-xs'
                     : 'border-gray-200 hover:bg-gray-50 text-gray-700'
                 }`}
               >
@@ -291,24 +712,31 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-800 mb-1.5">
-              Email Address <span className="text-red-500">*</span>
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-gray-800">
+                Email Address
+              </label>
+              {(auth.currentUser?.email || currentUser?.email) && (
+                <span className="text-[10px] text-green-700 bg-green-50 px-2 py-0.5 rounded-md border border-green-200 font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-green-600" />
+                  <span>Linked to Firebase</span>
+                </span>
+              )}
+            </div>
             <div className="relative">
               <Mail className="w-4 h-4 absolute left-3.5 top-3 text-gray-400" />
               <input
                 type="email"
                 required
+                readOnly
+                disabled
                 id="biodata-email"
                 placeholder="you@example.com"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                className={`w-full pl-10 pr-3.5 py-2.5 rounded-xl border text-sm transition-all focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                  errors.email ? 'border-red-500 bg-red-50/30' : 'border-gray-200 bg-gray-50/50 focus:bg-white'
-                }`}
+                value={auth.currentUser?.email || currentUser?.email || formData.email}
+                className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border text-sm transition-all border-gray-200 bg-gray-100 text-gray-700 cursor-not-allowed select-none"
               />
             </div>
-            <p className="text-[10px] text-gray-400 mt-1">We send your secure assessment links here.</p>
+            <p className="text-[10px] text-gray-400 mt-1">Confidential assessment links and clinical updates are sent here.</p>
             {errors.email && <p className="text-[11px] text-red-600 mt-1">{errors.email}</p>}
           </div>
         </div>
@@ -413,7 +841,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
         </div>
 
         {/* Emergency / Trusted Contact (Optional) */}
-        <div className="p-4 bg-gray-50 rounded-xl border border-gray-200/80 space-y-3">
+        <div className="p-4 bg-gray-50 rounded-2xl border border-gray-200/80 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-900">Alternative / Trusted Contact</span>
             <span className="text-[10px] text-gray-500 uppercase tracking-wider bg-gray-200/70 px-2 py-0.5 rounded">
@@ -456,7 +884,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
         </div>
 
         {/* Privacy & Consent Language */}
-        <div className="p-4 rounded-xl border border-red-100 bg-red-50/40 space-y-3">
+        <div className="p-4 rounded-2xl border border-red-100 bg-red-50/40 space-y-3">
           <div className="flex items-start gap-3">
             <input
               type="checkbox"
@@ -479,7 +907,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({ onRegist
         <div className="pt-2 flex flex-col sm:flex-row gap-3">
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || !currentUser}
             id="register-submit-start-btn"
             className="flex-1 py-3.5 px-6 rounded-xl bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-bold text-sm shadow-md shadow-red-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
           >

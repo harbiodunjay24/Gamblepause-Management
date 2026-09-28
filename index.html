@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
-      // Defensive handler: prevent browser extensions (e.g. MetaMask / web3 wallets) from crashing the app
+      // Defensive handler: prevent browser extensions and Vite HMR WebSocket errors from bubbling
       (function() {
         try {
           var originalDefineProperty = Object.defineProperty;
@@ -24,8 +24,33 @@
             return originalDefineProperty.apply(Object, arguments);
           };
 
+          // Suppress Vite HMR / WebSocket noise per environment constraints (HMR: Disabled)
+          var origConsoleError = console.error;
+          console.error = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var str = args.map(function(a) {
+              return typeof a === 'string' ? a : (a && (a.message || a.stack)) || '';
+            }).join(' ');
+            if (str.indexOf('[vite]') !== -1 || str.indexOf('WebSocket') !== -1 || str.indexOf('ws://') !== -1 || str.indexOf('wss://') !== -1) {
+              return;
+            }
+            origConsoleError.apply(console, arguments);
+          };
+
+          var origConsoleWarn = console.warn;
+          console.warn = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var str = args.map(function(a) {
+              return typeof a === 'string' ? a : (a && (a.message || a.stack)) || '';
+            }).join(' ');
+            if (str.indexOf('[vite]') !== -1 || str.indexOf('WebSocket') !== -1) {
+              return;
+            }
+            origConsoleWarn.apply(console, arguments);
+          };
+
           window.addEventListener('error', function(event) {
-            var msg = event && event.message ? String(event.message) : '';
+            var msg = event && (event.message || event.filename) ? String(event.message || event.filename) : '';
             if (msg.indexOf('ethereum') !== -1 || msg.indexOf('[vite]') !== -1 || msg.indexOf('WebSocket') !== -1) {
               event.stopImmediatePropagation();
               event.preventDefault();
@@ -33,7 +58,7 @@
           }, true);
 
           window.addEventListener('unhandledrejection', function(event) {
-            var reason = event && event.reason ? String(event.reason) : '';
+            var reason = event && event.reason ? String(event.reason.message || event.reason) : '';
             if (reason.indexOf('[vite]') !== -1 || reason.indexOf('WebSocket') !== -1) {
               event.stopImmediatePropagation();
               event.preventDefault();

@@ -37,10 +37,24 @@ service cloud.firestore {
       );
     }
 
-    // Users collection: only Super Admin can write/create; users can update own profile
+    // Users collection: only Super Admin can write/create privileged roles; users can update own profile without role escalation
     match /users/{userId} {
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == userId);
+      allow create: if isSuperAdmin() || (
+        isAuthenticated() && request.auth.uid == userId &&
+        (!('role' in request.resource.data) || request.resource.data.role == 'Client')
+      );
+      allow update: if isSuperAdmin() || (
+        isAuthenticated() && request.auth.uid == userId &&
+        (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Staff collection: readable by staff, writable by Super Admin
+    match /staff/{staffId} {
       allow read: if isStaff();
-      allow write: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow write: if isSuperAdmin();
     }
 
     // Clients collection:

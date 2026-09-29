@@ -23,7 +23,7 @@ import {
   INITIAL_ASSIGNMENTS,
 } from '../data/demoData';
 import { authService, AuthUser } from './authService';
-import { db, isFirebaseConfigured } from '../lib/firebase';
+import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 import {
   doc,
   updateDoc,
@@ -35,6 +35,7 @@ import {
   onSnapshot,
   query,
   where,
+  serverTimestamp,
 } from 'firebase/firestore';
 
 const STORAGE_KEYS = {
@@ -48,6 +49,27 @@ const STORAGE_KEYS = {
   AUDIT_LOGS: 'gamblepause_audit_logs',
   COUNSELLOR_ASSIGNMENTS: 'gamblepause_counsellor_assignments',
 };
+
+/**
+ * Recursively removes or converts undefined values to null to ensure Firestore setDoc/updateDoc
+ * calls never fail with 'Function setDoc() called with invalid data. Unsupported field value: undefined'.
+ */
+function cleanForFirestore<T>(data: T): T {
+  if (data === undefined) return null as any;
+  if (data === null || typeof data !== 'object') return data;
+  if (Array.isArray(data)) {
+    return data.map((item) => cleanForFirestore(item)) as any;
+  }
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      cleaned[key] = cleanForFirestore(value);
+    } else {
+      cleaned[key] = null;
+    }
+  }
+  return cleaned as any;
+}
 
 class DataService {
   private clients: Client[] = [];
@@ -1068,29 +1090,54 @@ class DataService {
     return this.staff.filter((s) => s.role === 'Counsellor' && s.active !== false);
   }
 
-  public async setCounsellorStatus(
-    counsellorId: string,
+  public async setStaffStatus(
+    staffId: string,
     active: boolean
   ): Promise<{ success: boolean; error?: string }> {
-    const counsellor = this.staff.find((s) => s.id === counsellorId);
-    if (!counsellor) {
-      return { success: false, error: 'Counsellor not found' };
+    const member = this.staff.find((s) => s.id === staffId);
+    if (!member) {
+      return { success: false, error: 'Staff member not found' };
     }
-    counsellor.active = active;
+    member.active = active;
     this.saveToStorage();
     this.notify();
 
+    // Sync with authService
+    await authService.toggleStaffStatus(member.authUid || staffId, active);
+
+    // Sync with Firestore
+    if (db && isFirebaseConfigured) {
+      const docId = member.authUid || staffId;
+      try {
+        await setDoc(doc(db, 'users', docId), { active }, { merge: true });
+      } catch (e) {
+        console.warn('[dataService] Firestore users active patch error:', e);
+      }
+      try {
+        await setDoc(doc(db, 'staff', staffId), { active }, { merge: true });
+      } catch (e) {
+        console.warn('[dataService] Firestore staff active patch error:', e);
+      }
+    }
+
     try {
-      await fetch(`/api/counsellors/${counsellorId}/status`, {
+      await fetch(`/api/counsellors/${staffId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: active ? 'Active' : 'Inactive' }),
       });
     } catch (e) {
-      console.warn('Backend counsellor status patch failed:', e);
+      console.warn('Backend staff status patch failed:', e);
     }
 
     return { success: true };
+  }
+
+  public async setCounsellorStatus(
+    counsellorId: string,
+    active: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.setStaffStatus(counsellorId, active);
   }
 
   public getCounsellorNotifications(counsellorId?: string, _counsellorName?: string): NotificationLog[] {
@@ -1247,14 +1294,14 @@ class DataService {
     return [];
   }
 
-  public submitAssessment(data: {
+  public async submitAssessment(data: {
     clientId: string;
     formId: string;
     answers: { questionId: string; answer: any; score?: number }[];
     section5Score?: number;
     gpdsScore?: number;
     totalScore?: number;
-  }): { submission: AssessmentSubmission; nextStageName?: string; delayDays?: number } {
+  }): Promise<{ submission: AssessmentSubmission; nextStageName?: string; delayDays?: number }> {
     const client = this.clients.find((c) => c.id === data.clientId || c.secureAccessKey === data.clientId);
     if (!client) throw new Error('Client not found');
 
@@ -1303,17 +1350,22 @@ class DataService {
     const now = new Date().toISOString();
     const submissionId = `sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-    // Build enriched answers with question text
+    // Build enriched answers with question text, guaranteeing NO undefined properties
     const enrichedAnswers = data.answers.map((a) => {
       const q = form.questions?.find((item) => item.id === a.questionId);
       return {
         questionId: a.questionId,
-        questionText: (a as any).questionText || (q ? q.text : a.questionId),
+        questionText: (a as any).questionText || (q ? q.text : a.questionId) || '',
         questionType: (q ? q.type : 'short_text') as any,
-        answer: a.answer,
-        score: a.score,
+        answer: a.answer !== undefined ? a.answer : '',
+        score: typeof a.score === 'number' ? a.score : null,
       };
     });
+
+    const effectiveAuthUid = auth.currentUser?.uid || client.authUid || '';
+    if (!client.authUid && effectiveAuthUid) {
+      client.authUid = effectiveAuthUid;
+    }
 
     const submission: AssessmentSubmission = {
       id: submissionId,
@@ -1324,15 +1376,58 @@ class DataService {
       stageId: client.currentStageId,
       submittedAt: now,
       answers: enrichedAnswers,
-      section5Score: data.section5Score,
-      gpdsScore: data.gpdsScore,
+      section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
+      gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
       totalScore: calculatedScore,
       scoreRiskLevel: riskLevel,
       status: riskLevel === 'High' || riskLevel === 'Severe' ? 'Flagged' : 'Completed',
     };
 
-    this.submissions.unshift(submission);
+    // A. Build complete assessment response document object for Firestore
+    const assessmentResponseDoc = {
+      id: submissionId,
+      clientId: client.id,
+      authUid: effectiveAuthUid || null,
+      clientName: `${client.firstName} ${client.lastName}`.trim() || client.fullName || 'Client',
+      clientEmail: client.email || auth.currentUser?.email || '',
+      formId: form.id,
+      formTitle: form.name,
+      stageId: client.currentStageId || 'stage-initial',
+      answers: enrichedAnswers,
+      section5Score: typeof data.section5Score === 'number' ? data.section5Score : null,
+      gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : null,
+      score: typeof calculatedScore === 'number' ? calculatedScore : 0,
+      totalScore: typeof calculatedScore === 'number' ? calculatedScore : 0,
+      severity: riskLevel || 'Standard',
+      riskLevel: riskLevel || 'Standard',
+      submittedAt: now,
+      isComplete: true,
+      status: riskLevel === 'High' || riskLevel === 'Severe' ? 'Flagged' : 'Completed',
+    };
 
+    // B & C. Write to assessmentResponses/{submissionId} and AWAIT
+    if (db && isFirebaseConfigured) {
+      try {
+        const cleanPayload = cleanForFirestore({
+          ...assessmentResponseDoc,
+          createdAt: serverTimestamp(),
+        });
+        await setDoc(doc(db, 'assessmentResponses', submissionId), cleanPayload);
+        console.log(`[Firestore] Assessment response ${submissionId} successfully written and verified in collection 'assessmentResponses'.`);
+      } catch (err: any) {
+        console.error('[Firestore] Error persisting assessment response to Firestore:', err);
+        // F. If assessmentResponses write fails:
+        // - DO NOT advance the client stage.
+        // - DO NOT show the assessment as completed.
+        // - Display the actual error.
+        // - Leave the client on Initial Assessment.
+        throw new Error(
+          `Firestore Error: Could not save assessment response to assessmentResponses/${submissionId}: ${err?.message || err}. Workflow stage has NOT been advanced.`
+        );
+      }
+    }
+
+    // E. ONLY AFTER SUCCESSFUL assessmentResponses WRITE:
     // Update client trajectory:
     client.lastAssessmentName = form.name;
     client.lastAssessmentDate = now;
@@ -1340,14 +1435,13 @@ class DataService {
       client.result = `Section 5 Score: ${data.section5Score ?? 'N/A'}/19, GPDS: ${data.gpdsScore ?? 'N/A'}/10. Risk: ${riskLevel || 'Standard'}`;
     }
 
-    // Update client trajectory:
     // Determine the next stage in workflow
     const currentWorkflowIndex = this.workflows.findIndex((w) => w.formId === form.id || w.id === client.currentStageId);
     const nextStage = currentWorkflowIndex >= 0 && currentWorkflowIndex < this.workflows.length - 1
       ? this.workflows[currentWorkflowIndex + 1]
       : null;
 
-    client.totalAssessmentsCompleted += 1;
+    client.totalAssessmentsCompleted = (client.totalAssessmentsCompleted || 0) + 1;
     client.lastActivityDate = now;
     if (riskLevel) {
       client.riskLevel = riskLevel === 'Severe' ? 'High' : riskLevel;
@@ -1400,6 +1494,72 @@ class DataService {
       });
     }
 
+    // Update client document in collection 'clients/{clientId}' in Firestore
+    const clientUpdateData: Record<string, any> = {
+      currentStageId: client.currentStageId,
+      currentStageName: client.currentStageName || '',
+      stage: client.currentStageName || client.currentStageId,
+      lastAssessmentName: client.lastAssessmentName,
+      lastAssessmentDate: client.lastAssessmentDate,
+      nextAssessmentId: client.nextAssessmentId || null,
+      nextAssessmentName: client.nextAssessmentName || null,
+      nextAssessmentDueDate: client.nextAssessmentDueDate || null,
+      status: client.status,
+      totalAssessmentsCompleted: client.totalAssessmentsCompleted,
+      lastActivityDate: client.lastActivityDate,
+    };
+    if (client.riskLevel) {
+      clientUpdateData.riskLevel = client.riskLevel;
+    }
+    if (client.result) {
+      clientUpdateData.result = client.result;
+    }
+    if (calculatedScore !== undefined) {
+      clientUpdateData.recoveryScore = calculatedScore;
+    }
+    if (effectiveAuthUid) {
+      clientUpdateData.authUid = effectiveAuthUid;
+    }
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await updateDoc(doc(db, 'clients', client.id), cleanForFirestore(clientUpdateData));
+        console.log(`[Firestore] Client ${client.id} successfully updated in clients collection.`);
+      } catch (clientErr: any) {
+        console.warn('[Firestore] updateDoc on client failed, attempting setDoc with merge:', clientErr?.message || clientErr);
+        try {
+          await setDoc(doc(db, 'clients', client.id), cleanForFirestore(clientUpdateData), { merge: true });
+        } catch (setErr) {
+          console.error('[Firestore] Failed to update client document in Firestore:', setErr);
+        }
+      }
+    }
+
+    // Update in-memory collections and storage
+    this.submissions.unshift(submission);
+
+    const cIdx = this.clients.findIndex((c) => c.id === client.id);
+    if (cIdx >= 0) {
+      this.clients[cIdx] = { ...client };
+    }
+
+    // Dispatch to shared backend for multi-phone / cross-device sync
+    try {
+      fetch('/api/submissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(submission),
+      }).catch((e) => console.warn('[Backend] Submit assessment sync error:', e));
+
+      fetch(`/api/clients/${client.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clientUpdateData),
+      }).catch((e) => console.warn('[Backend] Client update sync error:', e));
+    } catch (e) {
+      console.warn('[Backend] Sync fetch error:', e);
+    }
+
     this.logAudit(
       'SUBMIT_ASSESSMENT',
       'Assessment',
@@ -1408,6 +1568,7 @@ class DataService {
     );
 
     this.saveToStorage();
+    this.notify();
     return { submission, nextStageName: nextStage?.stageName, delayDays };
   }
 
@@ -1478,7 +1639,7 @@ class DataService {
     return [...this.staff];
   }
 
-  public saveStaffUser(user: StaffUser): StaffUser {
+  public async saveStaffUser(user: StaffUser): Promise<StaffUser> {
     const currentUser = authService.getCurrentUser();
     if (!currentUser || currentUser.role !== 'Super Admin') {
       throw new Error('Unauthorized: Only Super Admin can manage staff profiles.');
@@ -1486,12 +1647,49 @@ class DataService {
 
     const existingIdx = this.staff.findIndex((s) => s.id === user.id);
     if (existingIdx >= 0) {
-      this.staff[existingIdx] = user;
+      this.staff[existingIdx] = { ...this.staff[existingIdx], ...user };
     } else {
       this.staff.push(user);
     }
     this.saveToStorage();
     this.logAudit('STAFF_UPDATE', 'Staff', user.id, `Saved staff user ${user.name} (${user.role})`);
+
+    // Sync to Firestore users and staff collections
+    if (db && isFirebaseConfigured) {
+      const docId = user.authUid || user.id;
+      try {
+        await setDoc(
+          doc(db, 'users', docId),
+          {
+            id: docId,
+            name: user.name,
+            email: user.email.toLowerCase(),
+            phone: user.phone || '',
+            role: user.role,
+            active: user.active !== false,
+            authUid: docId,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.warn('[dataService] Firestore users update notice:', e);
+      }
+
+      try {
+        await setDoc(
+          doc(db, 'staff', user.id),
+          {
+            ...user,
+            authUid: docId,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.warn('[dataService] Firestore staff update notice:', e);
+      }
+    }
 
     try {
       fetch('/api/staff', {
@@ -1503,6 +1701,7 @@ class DataService {
       console.warn('[dataService] Fetch staff error:', e);
     }
 
+    this.notify();
     return user;
   }
 

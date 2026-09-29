@@ -168,6 +168,20 @@ export default function App() {
     };
   }, []);
 
+  // Detect if an existing authenticated client visits /intake and route them to Client Portal
+  useEffect(() => {
+    if (currentRoute === 'intake') {
+      const authUid = auth.currentUser?.uid || currentUser?.id;
+      if (authUid) {
+        dataService.getClientByAuthUid(authUid).then((existingClient) => {
+          if (existingClient) {
+            navigateTo('client-portal');
+          }
+        });
+      }
+    }
+  }, [currentRoute, currentUser]);
+
   const navigateTo = (route: AppRoute, token?: string) => {
     let url = '/';
     if (route === 'home') url = '/';
@@ -481,7 +495,6 @@ export default function App() {
               {adminTab === 'roles' && (
                 <StaffAndRoles
                   currentUser={staffUser}
-                  onSwitchUser={() => {}}
                 />
               )}
 
@@ -558,7 +571,13 @@ export default function App() {
 
           <ClientRegistration
             onRegistrationComplete={handleIntakeComplete}
-            onClientLogin={() => navigateTo('client-login')}
+            onClientLogin={() => {
+              if (authService.isAuthenticated() || auth.currentUser) {
+                navigateTo('client-portal');
+              } else {
+                navigateTo('client-login');
+              }
+            }}
           />
         </main>
 

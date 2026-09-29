@@ -17,6 +17,7 @@ import {
   Mail,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
+import { authService } from '../../services/authService';
 import { StaffUser, Client } from '../../types';
 
 interface CounsellorManagementProps {
@@ -39,6 +40,7 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
   const [newCounsellorName, setNewCounsellorName] = useState('');
   const [newCounsellorEmail, setNewCounsellorEmail] = useState('');
   const [newCounsellorPhone, setNewCounsellorPhone] = useState('');
+  const [newCounsellorPassword, setNewCounsellorPassword] = useState('');
 
   const staff = dataService.getStaff();
   const allClients = dataService.getClients();
@@ -125,14 +127,27 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
       active: true,
     };
 
-    await dataService.saveStaffUser(newStaff);
+    // 1. Create real account in Firebase Authentication & persist to Firestore users/staff
+    const pwd = newCounsellorPassword.trim() || 'Gamblepause';
+    const authRes = await authService.createStaffAccount(newStaff, pwd);
+    if (!authRes.success) {
+      setFeedbackMessage({
+        type: 'error',
+        text: authRes.error || 'Failed to provision counsellor in Firebase Authentication.',
+      });
+      return;
+    }
+
+    // 2. Persist to dataService and backend
+    await dataService.saveStaffUser(authRes.user || newStaff);
+
     setShowAddModal(false);
     setNewCounsellorName('');
     setNewCounsellorEmail('');
     setNewCounsellorPhone('');
     setFeedbackMessage({
       type: 'success',
-      text: `Counsellor ${newStaff.name} created successfully and added to active database.`,
+      text: `Counsellor ${newStaff.name} created successfully with Firebase Authentication & Firestore records.`,
     });
     setTimeout(() => setFeedbackMessage(null), 5000);
   };
@@ -516,8 +531,21 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Initial Password (min 6 characters)
+                </label>
+                <input
+                  type="password"
+                  value={newCounsellorPassword}
+                  onChange={(e) => setNewCounsellorPassword(e.target.value)}
+                  placeholder="Set initial password (min 6 chars)"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-gray-300 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </div>
+
               <div className="p-3 bg-gray-50 rounded-xl text-[11px] text-gray-600">
-                Initial password will be set to: <strong>Gamblepause</strong>. The counsellor can change their password on first login.
+                The counsellor can update their password securely on first login or via password reset email.
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">

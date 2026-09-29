@@ -3,6 +3,7 @@ import {
   Users,
   Shield,
   UserCheck,
+  UserX,
   Lock,
   Mail,
   Phone,
@@ -11,7 +12,9 @@ import {
   AlertCircle,
   KeyRound,
   Eye,
-  EyeOff,
+  ShieldCheck,
+  FileText,
+  X,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { authService } from '../../services/authService';
@@ -19,18 +22,23 @@ import { StaffUser, UserRole } from '../../types';
 
 interface StaffAndRolesProps {
   currentUser: StaffUser;
-  onSwitchUser: (staff: StaffUser) => void;
 }
 
-export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwitchUser }) => {
+export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => {
   const staff = dataService.getStaff();
   const [showAddModal, setShowAddModal] = useState(false);
+  const [viewingStaff, setViewingStaff] = useState<StaffUser | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
   const [newStaff, setNewStaff] = useState({
     name: '',
     email: '',
     phone: '',
     role: 'Counsellor' as UserRole,
+    temporaryPassword: 'Gamblepause',
   });
+  const [addStaffError, setAddStaffError] = useState<string | null>(null);
+  const [isAddingStaff, setIsAddingStaff] = useState(false);
 
   // Password change state for Super Admin
   const [currentPwd, setCurrentPwd] = useState('');
@@ -42,25 +50,94 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
 
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStaff.name || !newStaff.email) return;
+    setAddStaffError(null);
 
-    const staffMember: StaffUser = {
-      id: `staff-${Date.now()}`,
-      name: newStaff.name.trim(),
-      email: newStaff.email.trim().toLowerCase(),
-      phone: newStaff.phone.trim(),
-      role: newStaff.role,
-      assignedClientsCount: 0,
-      active: true,
-    };
+    if (!newStaff.name.trim() || !newStaff.email.trim()) {
+      setAddStaffError('Name and email address are required.');
+      return;
+    }
+    if (newStaff.temporaryPassword.length < 6) {
+      setAddStaffError('Initial temporary password must be at least 6 characters long.');
+      return;
+    }
 
-    dataService.saveStaffUser(staffMember);
+    setIsAddingStaff(true);
+    try {
+      const staffMember: StaffUser = {
+        id: `staff-${Date.now()}`,
+        name: newStaff.name.trim(),
+        email: newStaff.email.trim().toLowerCase(),
+        phone: newStaff.phone.trim() || '+234 800 000 0000',
+        role: newStaff.role,
+        assignedClientsCount: 0,
+        active: true,
+      };
 
-    // Also provision login credentials in authService
-    await authService.createStaffAccount(staffMember, 'Gamblepause');
+      // 1. Create real account in Firebase Authentication & persist to Firestore users/staff
+      const authRes = await authService.createStaffAccount(staffMember, newStaff.temporaryPassword);
+      if (!authRes.success) {
+        setAddStaffError(authRes.error || 'Failed to create user in Firebase Authentication.');
+        setIsAddingStaff(false);
+        return;
+      }
 
-    setShowAddModal(false);
-    setNewStaff({ name: '', email: '', phone: '', role: 'Counsellor' });
+      // 2. Persist to dataService
+      await dataService.saveStaffUser(authRes.user || staffMember);
+
+      setShowAddModal(false);
+      setNewStaff({
+        name: '',
+        email: '',
+        phone: '',
+        role: 'Counsellor',
+        temporaryPassword: 'Gamblepause',
+      });
+      setActionFeedback({
+        type: 'success',
+        message: `Account for ${staffMember.name} created successfully with Firebase Authentication & Firestore records.`,
+      });
+      setTimeout(() => setActionFeedback(null), 6000);
+    } catch (err: any) {
+      setAddStaffError(err.message || 'Error creating staff member.');
+    } finally {
+      setIsAddingStaff(false);
+    }
+  };
+
+  const handleToggleStatus = async (member: StaffUser) => {
+    const nextStatus = member.active === false ? true : false;
+    const res = await dataService.setStaffStatus(member.id, nextStatus);
+    if (res.success) {
+      setActionFeedback({
+        type: 'success',
+        message: `Staff member ${member.name} has been ${nextStatus ? 'activated' : 'deactivated'}.`,
+      });
+      if (viewingStaff?.id === member.id) {
+        setViewingStaff({ ...viewingStaff, active: nextStatus });
+      }
+    } else {
+      setActionFeedback({
+        type: 'error',
+        message: res.error || 'Failed to update account status.',
+      });
+    }
+    setTimeout(() => setActionFeedback(null), 5000);
+  };
+
+  const handleSendPasswordReset = async (member: StaffUser) => {
+    const res = await authService.sendStaffPasswordResetEmail(member.email);
+    if (res.success) {
+      setActionFeedback({
+        type: 'success',
+        message: `Password reset email sent to ${member.email}.`,
+      });
+    } else {
+      setActionFeedback({
+        type: 'error',
+        message: res.error || `Failed to send password reset to ${member.email}.`,
+      });
+    }
+    setTimeout(() => setActionFeedback(null), 5000);
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -81,7 +158,7 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
     try {
       const res = await authService.changePassword(currentPwd, newPwd);
       if (res.success) {
-        setPwdSuccess('Password changed successfully. Your new credentials are now active.');
+        setPwdSuccess('Password changed successfully in Firebase Authentication. Your new credentials are now active.');
         setCurrentPwd('');
         setNewPwd('');
         setConfirmPwd('');
@@ -97,6 +174,32 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
 
   return (
     <div className="space-y-6">
+      {/* Action Notification Banner */}
+      {actionFeedback && (
+        <div
+          className={`p-4 rounded-xl text-xs font-bold flex items-center justify-between border ${
+            actionFeedback.type === 'success'
+              ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+              : 'bg-red-50 text-red-900 border-red-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {actionFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span>{actionFeedback.message}</span>
+          </div>
+          <button
+            onClick={() => setActionFeedback(null)}
+            className="text-gray-400 hover:text-gray-700 ml-3 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white rounded-2xl p-5 sm:p-6 border border-gray-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -110,7 +213,10 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
 
         {currentUser.role === 'Super Admin' && (
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              setAddStaffError(null);
+              setShowAddModal(true);
+            }}
             id="add-staff-member-btn"
             className="inline-flex items-center gap-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-4 py-2.5 rounded-xl shadow-md shadow-red-500/20 transition-all cursor-pointer"
           >
@@ -133,7 +239,7 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                   Super User Security & Password Update
                 </h3>
                 <p className="text-xs text-gray-500">
-                  Securely update password for currently active Super User account ({currentUser.name}).
+                  Securely update password for currently active Super User account ({currentUser.name} &bull; {currentUser.email}).
                 </p>
               </div>
             </div>
@@ -206,7 +312,8 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
       {/* Staff Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {staff.map((member) => {
-          const isCurrentUser = member.id === currentUser.id;
+          const isCurrentUser = member.id === currentUser.id || member.email.toLowerCase() === currentUser.email.toLowerCase();
+          const isActive = member.active !== false;
           return (
             <div
               key={member.id}
@@ -226,21 +333,32 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                       {member.name}
                       {isCurrentUser && (
                         <span className="text-[10px] bg-red-50 text-red-700 font-bold px-1.5 py-0.2 rounded border border-red-200">
-                          Active
+                          You
                         </span>
                       )}
                     </h3>
-                    <span
-                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
-                        member.role === 'Super Admin'
-                          ? 'bg-red-50 text-red-700 border-red-200'
-                          : member.role === 'Counsellor'
-                          ? 'bg-gray-100 text-gray-800 border-gray-200'
-                          : 'bg-gray-50 text-gray-700 border-gray-200'
-                      }`}
-                    >
-                      {member.role === 'Super Admin' ? 'Super User' : member.role}
-                    </span>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span
+                        className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                          member.role === 'Super Admin'
+                            ? 'bg-red-50 text-red-700 border-red-200'
+                            : member.role === 'Counsellor'
+                            ? 'bg-gray-100 text-gray-800 border-gray-200'
+                            : 'bg-gray-50 text-gray-700 border-gray-200'
+                        }`}
+                      >
+                        {member.role === 'Super Admin' ? 'Super User' : member.role}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                          isActive
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-gray-100 text-gray-600 border-gray-300'
+                        }`}
+                      >
+                        {isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -256,21 +374,68 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                     <span>{member.phone}</span>
                   </div>
                 )}
+                {member.assignedClientsCount !== undefined && (
+                  <div className="text-[11px] text-gray-400">
+                    Active Caseload: <strong className="text-gray-700">{member.assignedClientsCount}</strong> clients
+                  </div>
+                )}
               </div>
 
-              <div className="pt-2">
+              {/* Administrative Actions - Strictly no account switching or impersonation */}
+              <div className="pt-2 flex flex-col gap-2">
                 {!isCurrentUser ? (
-                  <button
-                    type="button"
-                    onClick={() => onSwitchUser(member)}
-                    className="w-full py-2 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <UserCheck className="w-3.5 h-3.5" />
-                    <span>Switch to this Profile</span>
-                  </button>
+                  <>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setViewingStaff(member)}
+                        className="flex-1 py-2 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-gray-500" />
+                        <span>View Profile</span>
+                      </button>
+
+                      {currentUser.role === 'Super Admin' && (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStatus(member)}
+                          className={`py-2 px-3 rounded-xl font-bold text-xs transition-all cursor-pointer flex items-center gap-1 border ${
+                            isActive
+                              ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                          }`}
+                          title={isActive ? 'Deactivate account access' : 'Activate account access'}
+                        >
+                          {isActive ? (
+                            <>
+                              <UserX className="w-3.5 h-3.5" />
+                              <span>Deactivate</span>
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>Activate</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+
+                    {currentUser.role === 'Super Admin' && (
+                      <button
+                        type="button"
+                        onClick={() => handleSendPasswordReset(member)}
+                        className="w-full py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <KeyRound className="w-3 h-3 text-gray-400" />
+                        <span>Send Password Reset</span>
+                      </button>
+                    )}
+                  </>
                 ) : (
-                  <div className="text-center text-[11px] font-bold text-red-600 bg-red-50 py-1.5 rounded-lg">
-                    Current Session Operator
+                  <div className="text-center text-[11px] font-bold text-red-600 bg-red-50 py-2 rounded-xl border border-red-200 flex items-center justify-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Current Session Operator (You)</span>
                   </div>
                 )}
               </div>
@@ -319,14 +484,14 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                     {row.co ? (
                       <span className="inline-block w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 font-bold leading-5">✓</span>
                     ) : (
-                      <span className="text-gray-300 font-bold">—</span>
+                      <span className="inline-block w-5 h-5 rounded-full bg-gray-100 text-gray-400 font-bold leading-5">✕</span>
                     )}
                   </td>
                   <td className="py-3 px-4 text-center">
                     {row.an ? (
                       <span className="inline-block w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 font-bold leading-5">✓</span>
                     ) : (
-                      <span className="text-gray-300 font-bold">—</span>
+                      <span className="inline-block w-5 h-5 rounded-full bg-gray-100 text-gray-400 font-bold leading-5">✕</span>
                     )}
                   </td>
                 </tr>
@@ -336,15 +501,125 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
         </div>
       </div>
 
+      {/* Staff Profile Details Modal */}
+      {viewingStaff && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-md w-full space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-gray-700" />
+                <h3 className="text-base font-bold text-gray-950">Staff Profile & Credentials</h3>
+              </div>
+              <button
+                onClick={() => setViewingStaff(null)}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Full Name:</span>
+                <span className="font-bold text-gray-900">{viewingStaff.name}</span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Email:</span>
+                <span className="font-bold text-gray-900">{viewingStaff.email}</span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Phone:</span>
+                <span className="font-bold text-gray-900">{viewingStaff.phone || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Role:</span>
+                <span className="font-bold text-gray-900">{viewingStaff.role}</span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Account Status:</span>
+                <span
+                  className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+                    viewingStaff.active !== false
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-gray-200 text-gray-700'
+                  }`}
+                >
+                  {viewingStaff.active !== false ? 'Active' : 'Inactive'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">Assigned Caseload:</span>
+                <span className="font-bold text-gray-900">{viewingStaff.assignedClientsCount || 0} clients</span>
+              </div>
+              <div className="flex justify-between items-center p-2.5 bg-gray-50 rounded-xl">
+                <span className="text-gray-500 font-semibold">System ID / Firebase UID:</span>
+                <span className="font-mono text-[10px] text-gray-600 truncate max-w-[200px]">
+                  {viewingStaff.authUid || viewingStaff.id}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+              {currentUser.role === 'Super Admin' && viewingStaff.id !== currentUser.id && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleToggleStatus(viewingStaff);
+                    }}
+                    className="px-3 py-2 rounded-xl text-xs font-bold border border-gray-200 hover:bg-gray-50 cursor-pointer"
+                  >
+                    {viewingStaff.active !== false ? 'Deactivate Account' : 'Activate Account'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleSendPasswordReset(viewingStaff);
+                    }}
+                    className="px-3 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-800 cursor-pointer"
+                  >
+                    Send Reset Email
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setViewingStaff(null)}
+                className="px-4 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-white text-xs font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add Staff Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-md w-full space-y-4">
-            <h3 className="text-base font-bold text-gray-950">Add Authorized Staff Member</h3>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h3 className="text-base font-bold text-gray-950">Add Authorized Staff Member</h3>
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {addStaffError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{addStaffError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleAddStaff} className="space-y-3 text-xs">
               <div>
-                <label className="block font-bold text-gray-800 mb-1">Full Name</label>
+                <label className="block font-bold text-gray-800 mb-1">
+                  Full Name <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="text"
                   required
@@ -356,7 +631,9 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
               </div>
 
               <div>
-                <label className="block font-bold text-gray-800 mb-1">Email</label>
+                <label className="block font-bold text-gray-800 mb-1">
+                  Email Address <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="email"
                   required
@@ -390,7 +667,22 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                   <option value="Analyst">Analyst / Viewer</option>
                 </select>
                 <p className="text-[10px] text-gray-500 mt-1">
-                  *Designated Super Users: Abiodun Ayodeji and Ladipo Abiose. New staff members can be assigned as Counsellor, Staff, or Analyst.
+                  Designated Super Users: Abiodun Ayodeji and Ladipo Abiose. Staff accounts can be assigned as Counsellor, Staff, or Analyst.
+                </p>
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-800 mb-1">Initial Temporary Password</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Gamblepause"
+                  value={newStaff.temporaryPassword}
+                  onChange={(e) => setNewStaff({ ...newStaff, temporaryPassword: e.target.value })}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  The staff member can sign in using this password and update it at any time.
                 </p>
               </div>
 
@@ -398,15 +690,16 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser, onSwi
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold"
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20"
+                  disabled={isAddingStaff}
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
                 >
-                  Create Staff Account
+                  {isAddingStaff ? 'Creating...' : 'Create Staff Account'}
                 </button>
               </div>
             </form>

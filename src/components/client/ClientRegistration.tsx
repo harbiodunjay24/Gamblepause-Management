@@ -34,6 +34,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({
   // Authentication status
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => authService.getCurrentUser());
   const [existingClientRecord, setExistingClientRecord] = useState<Client | null>(null);
+  const [isCheckingExistingClient, setIsCheckingExistingClient] = useState(false);
 
   // Firebase Auth Form State (New Intake Account Registration)
   const [authFullName, setAuthFullName] = useState('');
@@ -113,10 +114,22 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({
     async function checkExistingClient() {
       const authUid = auth.currentUser?.uid || currentUser?.id;
       if (authUid) {
-        const client = await dataService.getClientByAuthUid(authUid);
-        if (isMounted && client) {
-          setExistingClientRecord(client);
+        setIsCheckingExistingClient(true);
+        try {
+          const client = await dataService.getClientByAuthUid(authUid);
+          if (isMounted && client) {
+            setExistingClientRecord(client);
+          }
+        } catch (e) {
+          console.warn('[ClientRegistration] checkExistingClient error:', e);
+        } finally {
+          if (isMounted) {
+            setIsCheckingExistingClient(false);
+          }
         }
+      } else {
+        setExistingClientRecord(null);
+        setIsCheckingExistingClient(false);
       }
     }
     checkExistingClient();
@@ -523,41 +536,99 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({
               <span>Switch Account</span>
             </button>
           </div>
-
-          {existingClientRecord && (
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2.5">
-                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
-                <span className="text-blue-900 font-medium">
-                  Active Client Profile: <strong className="font-bold">{existingClientRecord.firstName} {existingClientRecord.lastName}</strong> ({existingClientRecord.id})
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onClientLogin) {
-                    onClientLogin();
-                  } else {
-                    window.location.href = '/client';
-                  }
-                }}
-                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition-colors cursor-pointer"
-              >
-                Go to Client Portal
-              </button>
-            </div>
-          )}
         </div>
       )}
 
-      {/* Main Biodata Form: Available when authenticated */}
-      <form
-        onSubmit={(e) => handleSubmit(e, true)}
-        className={`bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-sm space-y-6 transition-opacity ${
-          !currentUser ? 'opacity-40 pointer-events-none' : 'opacity-100'
-        }`}
-        id="client-biodata-form"
-      >
+      {existingClientRecord ? (
+        /* EXISTING CLIENT VIEW: Never show biodata form again */
+        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-sm space-y-6 text-center sm:text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center font-bold shrink-0">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                  Existing Client Record Active
+                </span>
+                <h2 className="text-xl sm:text-2xl font-black text-gray-950 mt-1">
+                  Welcome Back, {existingClientRecord.preferredName || existingClientRecord.firstName}
+                </h2>
+              </div>
+            </div>
+
+            <div className="sm:text-right">
+              <div className="text-[11px] text-gray-500 font-mono">Client ID</div>
+              <div className="text-sm font-black text-gray-900">{existingClientRecord.id}</div>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-xs text-gray-700 space-y-3">
+            <p className="text-gray-600 text-sm leading-relaxed">
+              You are already registered with GamblePause! Your clinical profile is active in Firestore and your existing biodata is safely preserved. You do not need to re-enter your biodata.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <div className="p-3 bg-white rounded-xl border border-gray-200">
+                <span className="text-[10px] uppercase font-bold text-gray-400 block">Registered Email</span>
+                <span className="font-semibold text-gray-900">{existingClientRecord.email}</span>
+              </div>
+              <div className="p-3 bg-white rounded-xl border border-gray-200">
+                <span className="text-[10px] uppercase font-bold text-gray-400 block">Current Stage</span>
+                <span className="font-semibold text-gray-900">{existingClientRecord.currentStageName || existingClientRecord.currentStageId}</span>
+              </div>
+              <div className="p-3 bg-white rounded-xl border border-gray-200">
+                <span className="text-[10px] uppercase font-bold text-gray-400 block">Phone</span>
+                <span className="font-semibold text-gray-900">{existingClientRecord.phone}</span>
+              </div>
+              <div className="p-3 bg-white rounded-xl border border-gray-200">
+                <span className="text-[10px] uppercase font-bold text-gray-400 block">Assigned Counsellor</span>
+                <span className="font-semibold text-gray-900">{existingClientRecord.assignedCounsellorName || 'GamblePause Clinical Team'}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (onClientLogin) {
+                  onClientLogin();
+                } else {
+                  window.location.href = '/client';
+                }
+              }}
+              className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md shadow-red-600/20 flex items-center justify-center gap-2 transition-transform hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
+            >
+              <span>Go to Client Portal</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                authService.logout();
+                setCurrentUser(null);
+                setExistingClientRecord(null);
+              }}
+              className="w-full sm:w-auto px-5 py-3.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 font-bold text-xs transition-colors cursor-pointer"
+            >
+              Sign In with Different Account
+            </button>
+          </div>
+        </div>
+      ) : isCheckingExistingClient ? (
+        <div className="bg-white rounded-3xl p-8 border border-gray-200 shadow-sm text-center space-y-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+          <p className="text-xs text-gray-500 font-medium">Checking your client profile...</p>
+        </div>
+      ) : (
+        /* Main Biodata Form: Available ONLY for Brand-New Authenticated Clients */
+        <form
+          onSubmit={(e) => handleSubmit(e, true)}
+          className={`bg-white rounded-3xl p-6 sm:p-8 border border-gray-200 shadow-sm space-y-6 transition-opacity ${
+            !currentUser ? 'opacity-40 pointer-events-none' : 'opacity-100'
+          }`}
+          id="client-biodata-form"
+        >
         <div className="border-b border-gray-100 pb-3 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
@@ -926,6 +997,7 @@ export const ClientRegistration: React.FC<ClientRegistrationProps> = ({
           Already registered? Your counsellor or automated SMS will provide your direct secure link.
         </p>
       </form>
+      )}
     </div>
   );
 };

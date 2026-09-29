@@ -61,8 +61,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
     loadClientRecord();
 
+    const unsub = dataService.subscribe(() => {
+      loadClientRecord();
+    });
+
     return () => {
       isMounted = false;
+      unsub();
     };
   }, [user.clientId, user.id]);
 
@@ -278,11 +283,16 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             {assessmentStages.map((stage, idx) => {
               const formDef = forms.find((f) => f.id === stage.formId) ||
                 (stage.id === 'stage-initial' || stage.formId === 'form-recovery-1' ? forms.find((f) => f.id === 'form-recovery-1') : undefined);
-              const isCompleted = formDef ? completedFormIds.has(formDef.id) : false;
+              const isCompleted =
+                (formDef ? completedFormIds.has(formDef.id) : false) ||
+                (Boolean(client.lastAssessmentDate) && (stage.id === 'stage-initial' || stage.formId === 'form-recovery-1')) ||
+                ((client.totalAssessmentsCompleted || 0) > idx);
               const isCurrent =
-                client.nextAssessmentId === stage.formId ||
-                client.currentStageId === stage.id ||
-                (stage.id === 'stage-initial' && (!client.nextAssessmentId || client.nextAssessmentId === 'form-initial' || client.nextAssessmentId === 'form-recovery-1'));
+                !isCompleted && (
+                  client.nextAssessmentId === stage.formId ||
+                  client.currentStageId === stage.id ||
+                  (stage.id === 'stage-initial' && !client.lastAssessmentDate && (!client.nextAssessmentId || client.nextAssessmentId === 'form-initial' || client.nextAssessmentId === 'form-recovery-1'))
+                );
               const isLocked = !isCompleted && !isCurrent;
 
               return (

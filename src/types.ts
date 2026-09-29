@@ -17,6 +17,7 @@ export interface StaffUser {
   phone?: string;
   assignedClientsCount: number;
   active: boolean;
+  authUid?: string;
 }
 
 export interface Client {
@@ -142,7 +143,7 @@ export interface AssessmentAnswer {
   questionText: string;
   questionType?: QuestionType;
   answer: string | number | string[] | boolean | any;
-  score?: number;
+  score?: number | null;
 }
 
 export interface AssessmentSubmission {

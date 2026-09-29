@@ -73,7 +73,7 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   );
 
   const isAlreadyCompleted =
-    Boolean(priorSubmission) &&
+    (Boolean(priorSubmission) || Boolean(client.lastAssessmentDate && (form.id === 'form-recovery-1' || form.id === 'form-initial'))) &&
     client.nextAssessmentId !== form.id &&
     client.currentStageId !== form.id;
 
@@ -152,15 +152,16 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   }
 
   // Handle submit from custom dedicated forms
-  const handleDedicatedFormSubmit = (payload: {
+  const handleDedicatedFormSubmit = async (payload: {
     answers: { questionId: string; answer: any; score?: number }[];
     section5Score?: number;
     gpdsScore?: number;
     totalScore?: number;
   }) => {
     setIsSubmitting(true);
+    setValidationError(null);
     try {
-      const res = dataService.submitAssessment({
+      const res = await dataService.submitAssessment({
         clientId: client.id,
         formId: form.id,
         answers: payload.answers,
@@ -187,6 +188,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_recovery_1' || form.id === 'form-recovery-1' || form.id === 'form-initial') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaRecovery1Form
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -200,6 +207,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_assessment_2' || form.id === 'form-assessment-2') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaAssessment2Form
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -213,6 +226,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_assessment_3' || form.id === 'form-assessment-3') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaAssessment3Form
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -226,6 +245,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_assessment_4' || form.id === 'form-assessment-4') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaAssessment4Form
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -239,6 +264,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_assessment_5' || form.id === 'form-assessment-5') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaAssessment5Form
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -252,6 +283,12 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
   if (form.code === 'gpa_feedback' || form.id === 'form-feedback') {
     return (
       <div className="px-4 py-6 sm:py-10">
+        {validationError && (
+          <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2.5 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <GpaFeedbackForm
           client={client}
           onSubmit={handleDedicatedFormSubmit}
@@ -303,7 +340,7 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
     }
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
       if (q.required) {
@@ -322,6 +359,7 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
     }
 
     setIsSubmitting(true);
+    setValidationError(null);
     try {
       const formattedAnswers = questions.map((q) => {
         const rawAns = answers[q.id];
@@ -343,7 +381,7 @@ export const ClientAssessment: React.FC<ClientAssessmentProps> = ({
         };
       });
 
-      const res = dataService.submitAssessment({
+      const res = await dataService.submitAssessment({
         clientId: client.id,
         formId: form.id,
         answers: formattedAnswers,

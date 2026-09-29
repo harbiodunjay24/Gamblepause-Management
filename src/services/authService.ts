@@ -1,12 +1,18 @@
 import { StaffUser, UserRole } from '../types';
 import { SUPER_ADMIN_NAME, SUPER_ADMIN_EMAIL } from '../data/gamblepauseMaterials';
-import { auth, db } from '../lib/firebase';
+import { auth, db, firebaseConfig, isFirebaseConfigured } from '../lib/firebase';
+import { initializeApp, getApps } from 'firebase/app';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
   updateProfile,
+  getAuth,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+  sendPasswordResetEmail,
 } from 'firebase/auth';
 import {
   doc,
@@ -67,124 +73,13 @@ class AuthService {
   private async init() {
     if (this.initialized) return;
 
-    // Load credentials or initialize defaults
-    const storedCreds = localStorage.getItem(STORAGE_KEYS.PASSWORDS);
-    if (storedCreds) {
-      try {
-        this.credentials = JSON.parse(storedCreds);
-      } catch {
-        this.credentials = {};
-      }
+    // Purge any stored staff passwords from localStorage to ensure Firebase Auth is sole source of truth
+    try {
+      localStorage.removeItem(STORAGE_KEYS.PASSWORDS);
+    } catch {
+      // Ignore
     }
-
-    // Default password for initial accounts is 'Gamblepause'
-    const defaultHash = await hashPassword('Gamblepause');
-
-    // Ensure Super Admin 1: Abiodun Ayodeji (Username: Abiodun.Ayodeji, Email: ayodejiharbiodun24@gmail.com)
-    const superAdmin1UsernameKey = 'abiodun.ayodeji';
-    const superAdmin1EmailKey = SUPER_ADMIN_EMAIL.toLowerCase();
-    const admin1Cred: StoredCredential = {
-      usernameOrEmail: 'Abiodun.Ayodeji',
-      hash: defaultHash,
-      userId: 'staff-superadmin',
-      role: 'Super Admin',
-      name: SUPER_ADMIN_NAME,
-      active: true,
-    };
-    this.credentials[superAdmin1UsernameKey] = admin1Cred;
-    this.credentials[superAdmin1EmailKey] = admin1Cred;
-
-    // Ensure Super Admin 2: Ladipo Abiose (Username: Ladipo.Abiose, Email: ladipo.abiose@gamblepause.org)
-    const superAdmin2UsernameKey = 'ladipo.abiose';
-    const superAdmin2EmailKey = 'ladipo.abiose@gamblepause.org';
-    const admin2Cred: StoredCredential = {
-      usernameOrEmail: 'Ladipo.Abiose',
-      hash: defaultHash,
-      userId: 'staff-superadmin-2',
-      role: 'Super Admin',
-      name: 'Ladipo Abiose',
-      active: true,
-    };
-    this.credentials[superAdmin2UsernameKey] = admin2Cred;
-    this.credentials[superAdmin2EmailKey] = admin2Cred;
-
-    // Official Counsellor 1: Benjamin
-    const counsellorBenUsername = 'benjamin';
-    const counsellorBenEmail = 'benjamin@gamblepause.org';
-    const benCred: StoredCredential = {
-      usernameOrEmail: 'Benjamin',
-      hash: defaultHash,
-      userId: 'counsellor-benjamin',
-      role: 'Counsellor',
-      name: 'Benjamin',
-      active: true,
-    };
-    this.credentials[counsellorBenUsername] = benCred;
-    this.credentials[counsellorBenEmail] = benCred;
-
-    // Official Counsellor 2: Micheal Akinniku
-    const counsellorMichUsername = 'micheal.akinniku';
-    const counsellorMichEmail = 'micheal.akinniku@gamblepause.org';
-    const michCred: StoredCredential = {
-      usernameOrEmail: 'Micheal.Akinniku',
-      hash: defaultHash,
-      userId: 'counsellor-micheal',
-      role: 'Counsellor',
-      name: 'Micheal Akinniku',
-      active: true,
-    };
-    this.credentials[counsellorMichUsername] = michCred;
-    this.credentials[counsellorMichEmail] = michCred;
-
-    // Official Counsellor 3: Celia Badmus
-    const counsellorCeliaUsername = 'celia.badmus';
-    const counsellorCeliaEmail = 'celia.badmus@gamblepause.org';
-    const celiaCred: StoredCredential = {
-      usernameOrEmail: 'Celia.Badmus',
-      hash: defaultHash,
-      userId: 'counsellor-celia',
-      role: 'Counsellor',
-      name: 'Celia Badmus',
-      active: true,
-    };
-    this.credentials[counsellorCeliaUsername] = celiaCred;
-    this.credentials[counsellorCeliaEmail] = celiaCred;
-
-    // Purge deprecated fake demo staff accounts
-    const deprecatedAccounts = [
-      'babajide.adeleke@gamblepause.org',
-      'fatima.bello@gamblepause.org',
-      'chidinma.okafor@gamblepause.org',
-      'tariq.alhassan@gamblepause.org',
-      'counsellor a',
-      'counsellor b',
-    ];
-    deprecatedAccounts.forEach((dep) => {
-      delete this.credentials[dep];
-    });
-
-    // Seed initial demo client account: Oluwaseun Adeleke (GP-0001)
-    const demoClientKey = 'oluwaseun.adeleke@example.com';
-    if (!this.credentials[demoClientKey]) {
-      this.credentials[demoClientKey] = {
-        usernameOrEmail: 'oluwaseun.adeleke@example.com',
-        hash: defaultHash,
-        userId: 'client-gp0001',
-        role: 'Client',
-        name: 'Oluwaseun Adeleke',
-        clientId: 'GP-0001',
-      };
-      this.credentials['gp-0001'] = {
-        usernameOrEmail: 'GP-0001',
-        hash: defaultHash,
-        userId: 'client-gp0001',
-        role: 'Client',
-        name: 'Oluwaseun Adeleke',
-        clientId: 'GP-0001',
-      };
-    }
-
-    this.saveCredentials();
+    this.credentials = {};
 
     // Load active session from sessionStorage (destroyed on tab close)
     const storedSession = sessionStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
@@ -392,6 +287,51 @@ class AuthService {
   }
 
   /**
+   * Resolve a staff username to their registered staff email address
+   */
+  public async resolveStaffEmail(identifier: string): Promise<string> {
+    const trimmed = identifier.trim().toLowerCase();
+    if (trimmed.includes('@')) {
+      return trimmed;
+    }
+
+    const usernameMap: Record<string, string> = {
+      'abiodun.ayodeji': 'ayodejiharbiodun24@gmail.com',
+      'abiodun': 'ayodejiharbiodun24@gmail.com',
+      'ayodeji': 'ayodejiharbiodun24@gmail.com',
+      'ladipo.abiose': 'ladipo.abiose@gamblepause.org',
+      'ladipo': 'ladipo.abiose@gamblepause.org',
+      'abiose': 'ladipo.abiose@gamblepause.org',
+      'benjamin': 'benjamin@gamblepause.org',
+      'micheal.akinniku': 'micheal.akinniku@gamblepause.org',
+      'micheal': 'micheal.akinniku@gamblepause.org',
+      'celia.badmus': 'celia.badmus@gamblepause.org',
+      'celia': 'celia.badmus@gamblepause.org',
+    };
+
+    if (usernameMap[trimmed]) {
+      return usernameMap[trimmed];
+    }
+
+    if (db) {
+      try {
+        const uQ = query(collection(db, 'users'), where('username', '==', trimmed));
+        const uSnap = await getDocs(uQ);
+        if (!uSnap.empty) {
+          const docData = uSnap.docs[0].data();
+          if (docData.email) {
+            return docData.email.toLowerCase().trim();
+          }
+        }
+      } catch {
+        // Ignore and fallback
+      }
+    }
+
+    return `${trimmed}@gamblepause.org`;
+  }
+
+  /**
    * Firebase Authentication user login with email and password
    */
   public async firebaseLogin(
@@ -407,15 +347,37 @@ class AuthService {
       return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
     }
 
+    const isSuperAdminEmail =
+      cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
+      cleanEmail === 'ladipo.abiose@gamblepause.org';
+
     try {
-      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      let cred;
+      try {
+        cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      } catch (signInErr: any) {
+        // If it's a known Super Admin and account does not exist in Firebase Auth yet,
+        // provision it securely in Firebase Auth with the password provided on first sign-in
+        if (
+          isSuperAdminEmail &&
+          (signInErr.code === 'auth/user-not-found' || signInErr.code === 'auth/invalid-credential')
+        ) {
+          try {
+            cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+            const defaultName = cleanEmail === 'ayodejiharbiodun24@gmail.com' ? 'Abiodun Ayodeji' : 'Ladipo Abiose';
+            await updateProfile(cred.user, { displayName: defaultName });
+          } catch {
+            throw signInErr;
+          }
+        } else {
+          throw signInErr;
+        }
+      }
+
       const fbUser = cred.user;
 
       let role: AuthUser['role'] = 'Client';
-      if (
-        cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
-        cleanEmail === 'ladipo.abiose@gamblepause.org'
-      ) {
+      if (isSuperAdminEmail) {
         role = 'Super Admin';
       } else if (
         cleanEmail === 'benjamin@gamblepause.org' ||
@@ -429,14 +391,34 @@ class AuthService {
 
       let clientId: string | undefined = undefined;
       let displayName = fbUser.displayName || cleanEmail.split('@')[0];
+      let isActive = true;
 
       if (db) {
         try {
           const uDoc = await getDoc(doc(db, 'users', fbUser.uid));
           if (uDoc.exists()) {
             const uData = uDoc.data();
-            if (uData.role) role = uData.role;
+            if (uData.role) {
+              role = isSuperAdminEmail ? 'Super Admin' : uData.role;
+            }
             if (uData.name) displayName = uData.name;
+            if (uData.active !== undefined) isActive = Boolean(uData.active);
+          } else if (isSuperAdminEmail) {
+            // Ensure Super Admin profile exists in Firestore users/{uid}
+            displayName = cleanEmail === 'ayodejiharbiodun24@gmail.com' ? 'Abiodun Ayodeji' : 'Ladipo Abiose';
+            await setDoc(
+              doc(db, 'users', fbUser.uid),
+              {
+                id: fbUser.uid,
+                name: displayName,
+                email: cleanEmail,
+                role: 'Super Admin',
+                active: true,
+                authUid: fbUser.uid,
+                createdAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
           }
 
           // Authoritative lookup: find Firestore client where client.authUid == fbUser.uid
@@ -453,24 +435,35 @@ class AuthService {
             }
           }
         } catch (e) {
-          console.warn('[authService] Client lookup notice:', e);
+          console.warn('[authService] Client/user lookup notice:', e);
         }
+      }
+
+      if (!isActive) {
+        await signOut(auth);
+        return {
+          success: false,
+          error: 'This account has been deactivated. Please contact a GamblePause Super User.',
+        };
       }
 
       // Check portal restrictions
       if (targetPortal === 'admin' && role !== 'Super Admin' && role !== 'Staff' && role !== 'Counsellor') {
+        await signOut(auth);
         return {
           success: false,
           error: 'Access Denied: This account is not authorized for administrative access.',
         };
       }
       if (targetPortal === 'counsellor' && role !== 'Counsellor' && role !== 'Super Admin') {
+        await signOut(auth);
         return {
           success: false,
           error: 'Access Denied: Counsellor credentials required.',
         };
       }
       if (targetPortal === 'client' && role !== 'Client') {
+        await signOut(auth);
         return {
           success: false,
           error: 'This account is a Staff/Admin account. Please use the Admin & Staff Login.',
@@ -499,7 +492,7 @@ class AuthService {
   }
 
   /**
-   * Secure authentication with Firebase Auth first, followed by backend verification and local fallback
+   * Secure authentication: Staff always uses real Firebase Auth; Clients use Firebase Auth with fallback
    */
   public async login(
     identifier: string,
@@ -508,16 +501,23 @@ class AuthService {
   ): Promise<{ success: boolean; user?: AuthUser; error?: string }> {
     const trimmedId = identifier.trim();
 
-    // 1. If identifier is an email, authenticate via Firebase Authentication
+    // 1. For Staff and Admin portals: STRICTLY authenticate with real Firebase Authentication
+    // Never authenticate one person by selecting another person's profile
+    // Never use localStorage/demo data to authenticate staff
+    if (targetPortal === 'admin' || targetPortal === 'counsellor') {
+      const email = await this.resolveStaffEmail(trimmedId);
+      return this.firebaseLogin(email, passwordAttempt, targetPortal);
+    }
+
+    // 2. If identifier is an email (for Client portal)
     if (trimmedId.includes('@')) {
       const fbResult = await this.firebaseLogin(trimmedId, passwordAttempt, targetPortal);
       if (fbResult.success) {
         return fbResult;
       }
-      // If Firebase Auth returned invalid credentials, check if it exists in local seeded fallback (e.g. for offline dev)
       const cleanId = trimmedId.toLowerCase();
       const localCred = this.credentials[cleanId];
-      if (localCred) {
+      if (localCred && localCred.role === 'Client') {
         const attemptHash = await hashPassword(passwordAttempt);
         if (attemptHash === localCred.hash) {
           const user: AuthUser = {
@@ -534,7 +534,6 @@ class AuthService {
           return { success: true, user };
         }
       }
-      // Otherwise return user-specified exact error message
       return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
     }
 
@@ -552,19 +551,7 @@ class AuthService {
       if (response.ok && data.success && data.user) {
         const user: AuthUser = data.user;
 
-        // Portal validation checks
-        if (targetPortal === 'admin' && user.role !== 'Super Admin' && user.role !== 'Staff' && user.role !== 'Counsellor') {
-          return {
-            success: false,
-            error: 'Access Denied: This account is not authorized for administrative access.',
-          };
-        }
-        if (targetPortal === 'counsellor' && user.role !== 'Counsellor' && user.role !== 'Super Admin') {
-          return {
-            success: false,
-            error: 'Access Denied: Counsellor credentials required.',
-          };
-        }
+        // Client portal validation check
         if (targetPortal === 'client' && user.role !== 'Client') {
           return {
             success: false,
@@ -611,21 +598,7 @@ class AuthService {
       };
     }
 
-    // Portal validation checks
-    if (targetPortal === 'admin' && cred.role !== 'Super Admin' && cred.role !== 'Staff' && cred.role !== 'Counsellor') {
-      return {
-        success: false,
-        error: 'Access Denied: This account is not authorized for administrative access.',
-      };
-    }
-
-    if (targetPortal === 'counsellor' && cred.role !== 'Counsellor' && cred.role !== 'Super Admin') {
-      return {
-        success: false,
-        error: 'Access Denied: Counsellor credentials required.',
-      };
-    }
-
+    // Client portal validation check
     if (targetPortal === 'client' && cred.role !== 'Client') {
       return {
         success: false,
@@ -678,35 +651,54 @@ class AuthService {
       return { success: false, error: 'New password must be at least 6 characters long.' };
     }
 
-    const userEmailKey = this.currentUser.email.toLowerCase();
-    const userCred = this.credentials[userEmailKey];
-
-    if (!userCred) {
-      return { success: false, error: 'User credential record not found.' };
-    }
-
-    const currentHash = await hashPassword(currentPasswordAttempt);
-    if (currentHash !== userCred.hash) {
-      return { success: false, error: 'Current password does not match.' };
-    }
-
-    const newHash = await hashPassword(newPassword);
-
-    // Update all matching identifier keys for this user
-    Object.keys(this.credentials).forEach((key) => {
-      if (this.credentials[key].userId === this.currentUser!.id) {
-        this.credentials[key].hash = newHash;
+    // 1. If user is authenticated in Firebase Auth, re-authenticate and update real Firebase password
+    if (auth.currentUser && auth.currentUser.email) {
+      try {
+        const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPasswordAttempt);
+        await reauthenticateWithCredential(auth.currentUser, credential);
+        await updatePassword(auth.currentUser, newPassword);
+      } catch (fbErr: any) {
+        console.warn('[authService] Firebase password change error:', fbErr);
+        if (
+          fbErr.code === 'auth/wrong-password' ||
+          fbErr.code === 'auth/invalid-credential' ||
+          fbErr.code === 'auth/invalid-login-credentials'
+        ) {
+          return { success: false, error: 'Current password does not match.' };
+        }
+        if (fbErr.code === 'auth/weak-password') {
+          return { success: false, error: 'New password must be at least 6 characters long.' };
+        }
+        if (fbErr.code === 'auth/requires-recent-login') {
+          return {
+            success: false,
+            error: 'Security requirement: Please sign in again before updating your password.',
+          };
+        }
+        return { success: false, error: fbErr.message || 'Failed to update Firebase password.' };
       }
-    });
+    } else {
+      // 2. Offline / local credential check if not in Firebase Auth
+      const userEmailKey = this.currentUser.email.toLowerCase();
+      const userCred =
+        this.credentials[userEmailKey] ||
+        Object.values(this.credentials).find((c) => c.userId === this.currentUser!.id);
 
-    this.saveCredentials();
+      if (userCred) {
+        const currentHash = await hashPassword(currentPasswordAttempt);
+        if (currentHash !== userCred.hash) {
+          return { success: false, error: 'Current password does not match.' };
+        }
+      }
+    }
 
-    // Sync password change to backend
+    // 3. Sync password change to backend
     try {
       fetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          userId: this.currentUser.id,
           usernameOrEmail: this.currentUser.username || this.currentUser.email,
           currentPassword: currentPasswordAttempt,
           newPassword,
@@ -717,6 +709,23 @@ class AuthService {
     }
 
     return { success: true };
+  }
+
+  /**
+   * Send password reset email via Firebase Auth
+   */
+  public async sendStaffPasswordResetEmail(email: string): Promise<{ success: boolean; error?: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'A valid email address is required.' };
+    }
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      return { success: true };
+    } catch (e: any) {
+      console.warn('[authService] sendPasswordResetEmail notice:', e);
+      return { success: false, error: e.message || 'Failed to send password reset email.' };
+    }
   }
 
   /**
@@ -767,68 +776,149 @@ class AuthService {
   }
 
   /**
-   * Super Admin creates a new staff/counsellor account
+   * Super Admin creates a new staff/counsellor account with real Firebase Authentication & Firestore persistence
    */
   public async createStaffAccount(
     staffUser: StaffUser,
     temporaryPassword: string = 'Gamblepause'
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; user?: StaffUser; error?: string }> {
     if (!this.isSuperAdmin()) {
       return { success: false, error: 'Unauthorized: Only Super Admin can create staff accounts.' };
     }
 
-    const emailKey = staffUser.email.toLowerCase().trim();
-    if (this.credentials[emailKey]) {
-      return { success: false, error: 'An account with this email already exists.' };
+    const cleanEmail = staffUser.email.toLowerCase().trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'A valid email address is required.' };
+    }
+    if (!staffUser.name || staffUser.name.trim().length === 0) {
+      return { success: false, error: 'Staff name is required.' };
+    }
+    if (!temporaryPassword || temporaryPassword.length < 6) {
+      return { success: false, error: 'Initial password must be at least 6 characters long.' };
     }
 
-    const hash = await hashPassword(temporaryPassword);
-    this.credentials[emailKey] = {
-      usernameOrEmail: staffUser.email,
-      hash,
-      userId: staffUser.id,
-      role: staffUser.role,
-      name: staffUser.name,
+    let firebaseUid = staffUser.id;
+
+    // 1. Create real user in Firebase Authentication via secondary app
+    // This creates the auth user without changing or logging out the Super Admin's active session!
+    if (isFirebaseConfigured) {
+      try {
+        const secondaryAppName = 'SecondaryAdminAuthApp';
+        const secondaryApp =
+          getApps().find((a) => a.name === secondaryAppName) ||
+          initializeApp(firebaseConfig, secondaryAppName);
+        const secondaryAuth = getAuth(secondaryApp);
+
+        try {
+          const cred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, temporaryPassword);
+          firebaseUid = cred.user.uid;
+          try {
+            await updateProfile(cred.user, { displayName: staffUser.name.trim() });
+          } catch (pe) {
+            console.warn('[authService] Secondary auth updateProfile notice:', pe);
+          }
+          await signOut(secondaryAuth);
+        } catch (fbErr: any) {
+          if (fbErr.code === 'auth/email-already-in-use') {
+            console.warn('[authService] Account already exists in Firebase Auth, linking to Firestore.');
+          } else if (fbErr.code === 'auth/weak-password') {
+            return { success: false, error: 'Initial password must be at least 6 characters long.' };
+          } else {
+            return { success: false, error: fbErr.message || 'Firebase Auth account creation failed.' };
+          }
+        }
+      } catch (authErr: any) {
+        console.error('[authService] Firebase Auth create error:', authErr);
+        return { success: false, error: authErr.message || 'Firebase Auth initialization failed.' };
+      }
+    }
+
+    const updatedStaffUser: StaffUser = {
+      ...staffUser,
+      authUid: firebaseUid,
       active: true,
     };
-    this.saveCredentials();
 
-    // Sync new staff to backend
+    // 2. Persist to Firestore: users/{firebaseUid} and staff/{staffUser.id}
+    if (db && isFirebaseConfigured) {
+      try {
+        // Users collection record for role and auth checks
+        await setDoc(
+          doc(db, 'users', firebaseUid),
+          {
+            id: firebaseUid,
+            name: staffUser.name.trim(),
+            email: cleanEmail,
+            phone: staffUser.phone?.trim() || '',
+            role: staffUser.role,
+            active: true,
+            authUid: firebaseUid,
+            createdAt: serverTimestamp(),
+            createdBy: auth.currentUser?.uid || 'super-admin',
+            createdByName: auth.currentUser?.displayName || 'Super Admin',
+          },
+          { merge: true }
+        );
+
+        // Staff collection record for administrative directory
+        await setDoc(
+          doc(db, 'staff', staffUser.id),
+          {
+            id: staffUser.id,
+            name: staffUser.name.trim(),
+            email: cleanEmail,
+            phone: staffUser.phone?.trim() || '',
+            role: staffUser.role,
+            assignedClientsCount: staffUser.assignedClientsCount || 0,
+            active: true,
+            authUid: firebaseUid,
+            createdAt: serverTimestamp(),
+            createdBy: auth.currentUser?.uid || 'super-admin',
+          },
+          { merge: true }
+        );
+      } catch (fsErr: any) {
+        console.warn('[authService] Firestore staff sync notice:', fsErr);
+      }
+    }
+
+    // 3. Sync new staff to backend
     try {
       fetch('/api/staff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(staffUser),
+        body: JSON.stringify(updatedStaffUser),
       }).catch((e) => console.warn('[authService] Backend staff create sync error:', e));
     } catch (e) {
       console.warn('[authService] Fetch staff create exception:', e);
     }
 
-    // Also index by username if applicable
-    const usernameKey = staffUser.name.replace(/\s+/g, '.').toLowerCase();
-    this.credentials[usernameKey] = {
-      usernameOrEmail: staffUser.name.replace(/\s+/g, '.'),
-      hash,
-      userId: staffUser.id,
-      role: staffUser.role,
-      name: staffUser.name,
-      active: true,
-    };
-
-    this.saveCredentials();
-    return { success: true };
+    return { success: true, user: updatedStaffUser };
   }
 
   /**
    * Toggle staff account active status
    */
-  public toggleStaffStatus(userId: string, active: boolean): void {
+  public async toggleStaffStatus(userId: string, active: boolean): Promise<void> {
     Object.keys(this.credentials).forEach((k) => {
       if (this.credentials[k].userId === userId) {
         this.credentials[k].active = active;
       }
     });
     this.saveCredentials();
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'users', userId), { active }, { merge: true });
+      } catch {
+        // Ignore
+      }
+      try {
+        await setDoc(doc(db, 'staff', userId), { active }, { merge: true });
+      } catch {
+        // Ignore
+      }
+    }
   }
 
   /**

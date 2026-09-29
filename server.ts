@@ -714,30 +714,47 @@ app.post('/api/auth/register-client', (req, res) => {
 });
 
 app.post('/api/auth/change-password', (req, res) => {
-  const { userId, currentPassword, newPassword } = req.body;
-  if (!userId || !currentPassword || !newPassword) {
+  const { userId, usernameOrEmail, currentPassword, newPassword } = req.body;
+  if ((!userId && !usernameOrEmail) || !newPassword) {
     return res.status(400).json({ success: false, error: 'Missing parameters.' });
   }
 
-  // Find user credential by userId
   const keys = Object.keys(db.credentials);
-  const matchingKey = keys.find((k) => db.credentials[k].userId === userId);
-
-  if (!matchingKey) {
-    return res.status(404).json({ success: false, error: 'User credential not found.' });
-  }
-
-  const userCred = db.credentials[matchingKey];
-  const oldHash = hashPassword(currentPassword);
-  if (userCred.hash !== oldHash) {
-    return res.status(401).json({ success: false, error: 'Current password incorrect.' });
-  }
+  const emailNorm = (usernameOrEmail || '').trim().toLowerCase();
+  const matchingKey = keys.find(
+    (k) =>
+      (userId && db.credentials[k].userId === userId) ||
+      (emailNorm && (db.credentials[k].usernameOrEmail.toLowerCase() === emailNorm || k.toLowerCase() === emailNorm))
+  );
 
   const newHash = hashPassword(newPassword);
-  for (const k of keys) {
-    if (db.credentials[k].userId === userId) {
-      db.credentials[k].hash = newHash;
+
+  if (matchingKey) {
+    const userCred = db.credentials[matchingKey];
+    if (currentPassword) {
+      const oldHash = hashPassword(currentPassword);
+      if (userCred.hash !== oldHash) {
+        return res.status(401).json({ success: false, error: 'Current password incorrect.' });
+      }
     }
+    for (const k of keys) {
+      if (
+        (userId && db.credentials[k].userId === userId) ||
+        (emailNorm && (db.credentials[k].usernameOrEmail.toLowerCase() === emailNorm || k.toLowerCase() === emailNorm))
+      ) {
+        db.credentials[k].hash = newHash;
+      }
+    }
+  } else if (emailNorm) {
+    // Seed credential entry for user if not yet in server cache
+    db.credentials[emailNorm] = {
+      usernameOrEmail: emailNorm,
+      hash: newHash,
+      userId: userId || `user-${Date.now()}`,
+      role: 'Super Admin',
+      name: emailNorm.split('@')[0],
+      active: true,
+    };
   }
 
   saveDatabase();

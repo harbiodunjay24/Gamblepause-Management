@@ -53,12 +53,6 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
     }
   };
 
-  const fillDemoClient = () => {
-    setIdentifier('GP-0001');
-    setPassword('Gamblepause');
-    setError(null);
-  };
-
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col justify-between px-4 py-8 font-sans">
       {/* Top Bar */}
@@ -184,13 +178,6 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
                 Start New Intake / Assessment Drive
               </button>
             </p>
-            <button
-              type="button"
-              onClick={fillDemoClient}
-              className="text-xs text-gray-400 hover:text-red-600 font-medium underline cursor-pointer block mx-auto pt-1"
-            >
-              Autofill Sample Client (GP-0001)
-            </button>
           </div>
         </div>
       </div>

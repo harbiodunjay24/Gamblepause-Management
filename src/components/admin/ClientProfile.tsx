@@ -105,7 +105,7 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
   };
 
   // Execute Reassignment with Super User verification and audit logging
-  const handleExecuteChangeCounsellor = () => {
+  const handleExecuteChangeCounsellor = async () => {
     if (!selectedNewCounsellorId) {
       setReassignmentError('Please select a new counsellor from the list.');
       return;
@@ -115,7 +115,7 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
       return;
     }
 
-    const res = dataService.assignCounsellor(
+    const res = await dataService.assignCounsellor(
       client.id,
       selectedNewCounsellorId,
       reassignmentReason.trim() || undefined

@@ -443,7 +443,7 @@ class AuthService {
         await signOut(auth);
         return {
           success: false,
-          error: 'This account has been deactivated. Please contact a GamblePause Super User.',
+          error: 'This account has been deactivated. Please contact a Super Admin.',
         };
       }
 
@@ -486,6 +486,12 @@ class AuthService {
       return { success: true, user: authUser };
     } catch (err: any) {
       console.warn('[authService] Firebase login error:', err);
+      if (err?.code === 'auth/user-disabled') {
+        return {
+          success: false,
+          error: 'This account has been deactivated. Please contact a Super Admin.',
+        };
+      }
       // As requested: IF EMAIL / PASSWORD ARE INCORRECT DISPLAY "PASSWORD OR EMAIL INCORRECT"
       return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
     }
@@ -511,115 +517,37 @@ class AuthService {
 
     // 2. If identifier is an email (for Client portal)
     if (trimmedId.includes('@')) {
-      const fbResult = await this.firebaseLogin(trimmedId, passwordAttempt, targetPortal);
-      if (fbResult.success) {
-        return fbResult;
-      }
-      const cleanId = trimmedId.toLowerCase();
-      const localCred = this.credentials[cleanId];
-      if (localCred && localCred.role === 'Client') {
-        const attemptHash = await hashPassword(passwordAttempt);
-        if (attemptHash === localCred.hash) {
-          const user: AuthUser = {
-            id: localCred.userId,
-            name: localCred.name,
-            email: localCred.usernameOrEmail,
-            role: localCred.role,
-            clientId: localCred.clientId,
-            username: localCred.usernameOrEmail,
-          };
-          this.currentUser = user;
-          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(user));
-          this.notify();
-          return { success: true, user };
+      return this.firebaseLogin(trimmedId, passwordAttempt, targetPortal);
+    }
+
+    // 3. If identifier is a Client ID (e.g. GP-2026-001 or GP-0001):
+    // Authoritatively resolve client's registered email directly from Cloud Firestore
+    let clientEmail: string | null = null;
+    if (db && isFirebaseConfigured) {
+      try {
+        const cDoc = await getDoc(doc(db, 'clients', trimmedId));
+        if (cDoc.exists() && cDoc.data()?.email) {
+          clientEmail = cDoc.data().email;
+        } else {
+          const q = query(collection(db, 'clients'), where('id', '==', trimmedId));
+          const qSnap = await getDocs(q);
+          if (!qSnap.empty && qSnap.docs[0].data()?.email) {
+            clientEmail = qSnap.docs[0].data().email;
+          }
         }
+      } catch (err) {
+        console.warn('[authService] Firestore lookup for client ID notice:', err);
       }
-      return { success: false, error: 'PASSWORD OR EMAIL INCORRECT' };
     }
 
-    // 2. Attempt authentication against the shared backend database for cross-device consistency
-    try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          usernameOrEmail: trimmedId,
-          password: passwordAttempt,
-        }),
-      });
-      const data = await response.json();
-      if (response.ok && data.success && data.user) {
-        const user: AuthUser = data.user;
-
-        // Client portal validation check
-        if (targetPortal === 'client' && user.role !== 'Client') {
-          return {
-            success: false,
-            error: 'This account is a Staff/Admin account. Please use the Admin & Staff Login.',
-          };
-        }
-
-        this.currentUser = user;
-        sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(user));
-        this.notify();
-        return { success: true, user };
-      } else if (response.status === 401 || response.status === 403) {
-        return { success: false, error: data.error || 'PASSWORD OR EMAIL INCORRECT' };
-      }
-    } catch (err) {
-      console.warn('[authService] Backend login unavailable, verifying with local credentials:', err);
+    if (clientEmail) {
+      return this.firebaseLogin(clientEmail, passwordAttempt, targetPortal);
     }
 
-    // 3. Fallback to local credential cache
-    await this.init();
-
-    const cleanId = trimmedId.toLowerCase();
-    const cred = this.credentials[cleanId];
-
-    if (!cred) {
-      return {
-        success: false,
-        error: 'PASSWORD OR EMAIL INCORRECT',
-      };
-    }
-
-    const attemptHash = await hashPassword(passwordAttempt);
-    if (attemptHash !== cred.hash) {
-      return {
-        success: false,
-        error: 'PASSWORD OR EMAIL INCORRECT',
-      };
-    }
-
-    if (cred.active === false) {
-      return {
-        success: false,
-        error: 'This account has been deactivated. Please contact a GamblePause Super User for assistance.',
-      };
-    }
-
-    // Client portal validation check
-    if (targetPortal === 'client' && cred.role !== 'Client') {
-      return {
-        success: false,
-        error: 'This account is a Staff/Admin account. Please use the Admin & Staff Login.',
-      };
-    }
-
-    const user: AuthUser = {
-      id: cred.userId,
-      name: cred.name,
-      email: cred.usernameOrEmail,
-      role: cred.role,
-      clientId: cred.clientId,
-      username: cred.usernameOrEmail,
+    return {
+      success: false,
+      error: 'PASSWORD OR EMAIL INCORRECT',
     };
-
-    this.currentUser = user;
-    sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(user));
-    this.notify();
-
-    return { success: true, user };
   }
 
   /**

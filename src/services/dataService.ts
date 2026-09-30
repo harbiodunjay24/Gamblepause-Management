@@ -91,16 +91,30 @@ class DataService {
     this.loadFromStorage();
     this.cleanseStaleStaff();
     this.cleanseWorkflows();
-    this.syncClientsFromFirestore();
+    this.syncAllFromFirestore();
     this.syncWithBackend();
     this.initRealtimeEvents();
     // Re-sync with Firestore whenever auth state changes (e.g. login/logout)
     authService.subscribe((user) => {
       if (user) {
-        this.syncClientsFromFirestore();
+        this.syncAllFromFirestore();
       }
       this.notify();
     });
+  }
+
+  /**
+   * Unified authoritative sync for all Cloud Firestore collections
+   */
+  public async syncAllFromFirestore(): Promise<void> {
+    await Promise.allSettled([
+      this.syncClientsFromFirestore(),
+      this.syncStaffFromFirestore(),
+      this.syncAssessmentResponsesFromFirestore(),
+      this.syncAssignmentsFromFirestore(),
+      this.syncFormsAndWorkflowsFromFirestore(),
+      this.syncNotificationsFromFirestore(),
+    ]);
   }
 
   /**
@@ -160,6 +174,217 @@ class DataService {
       this.firestoreSyncActive = true;
     } catch (err: any) {
       console.warn('[DataService] Firestore clients sync notice:', err?.message || err);
+    }
+  }
+
+  /**
+   * Authoritative synchronization of staff and counsellors from Cloud Firestore
+   */
+  public async syncStaffFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const snap = await getDocs(collection(db, 'staff'));
+      const firestoreStaff: StaffUser[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data() as StaffUser;
+        if (data && data.name && data.role) {
+          firestoreStaff.push({
+            ...data,
+            id: data.id || docSnap.id,
+            active: data.active !== false,
+          });
+        }
+      });
+      if (firestoreStaff.length > 0) {
+        this.mergeFirestoreStaff(firestoreStaff);
+      }
+    } catch (err: any) {
+      console.warn('[DataService] Firestore staff sync notice:', err?.message || err);
+    }
+  }
+
+  private mergeFirestoreStaff(firestoreStaff: StaffUser[]): void {
+    if (!Array.isArray(firestoreStaff) || firestoreStaff.length === 0) return;
+    const staffMap = new Map<string, StaffUser>();
+    for (const s of this.staff) {
+      staffMap.set(s.id, s);
+    }
+    for (const fs of firestoreStaff) {
+      staffMap.set(fs.id, {
+        ...(staffMap.get(fs.id) || {}),
+        ...fs,
+      });
+    }
+    this.staff = Array.from(staffMap.values());
+    this.cleanseStaleStaff();
+    this.saveToStorage();
+    this.notify();
+  }
+
+  /**
+   * Authoritative synchronization of assessment responses from Cloud Firestore
+   */
+  public async syncAssessmentResponsesFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const snap = await getDocs(collection(db, 'assessmentResponses'));
+      const firestoreSubmissions: AssessmentSubmission[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data && data.clientId) {
+          firestoreSubmissions.push({
+            id: data.id || docSnap.id,
+            clientId: data.clientId,
+            clientName: data.clientName || 'Client',
+            formId: data.formId,
+            formName: data.formTitle || data.formName || 'Assessment',
+            stageId: data.stageId || 'stage-initial',
+            submittedAt: data.submittedAt || new Date().toISOString(),
+            answers: Array.isArray(data.answers) ? data.answers : [],
+            totalScore: typeof data.totalScore === 'number' ? data.totalScore : (typeof data.score === 'number' ? data.score : undefined),
+            section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
+            gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
+            scoreRiskLevel: data.scoreRiskLevel || data.severity || data.riskLevel,
+            status: data.status || 'Completed',
+            counsellorNotes: data.counsellorNotes,
+          });
+        }
+      });
+      if (firestoreSubmissions.length > 0) {
+        this.mergeFirestoreSubmissions(firestoreSubmissions);
+      }
+    } catch (err: any) {
+      console.warn('[DataService] Firestore assessmentResponses sync notice:', err?.message || err);
+    }
+  }
+
+  private mergeFirestoreSubmissions(firestoreSubmissions: AssessmentSubmission[]): void {
+    if (!Array.isArray(firestoreSubmissions) || firestoreSubmissions.length === 0) return;
+    const subMap = new Map<string, AssessmentSubmission>();
+    for (const s of this.submissions) {
+      subMap.set(s.id, s);
+    }
+    for (const fs of firestoreSubmissions) {
+      subMap.set(fs.id, fs);
+    }
+    this.submissions = Array.from(subMap.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+    this.saveToStorage();
+    this.notify();
+  }
+
+  /**
+   * Authoritative synchronization of counsellor assignments from Cloud Firestore
+   */
+  public async syncAssignmentsFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const snap = await getDocs(collection(db, 'counsellorAssignments'));
+      const firestoreAssignments: CounsellorAssignmentHistory[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data() as CounsellorAssignmentHistory;
+        if (data && data.clientId && data.newCounsellorId) {
+          firestoreAssignments.push({
+            ...data,
+            id: data.id || docSnap.id,
+          });
+        }
+      });
+      if (firestoreAssignments.length > 0) {
+        const asgnMap = new Map<string, CounsellorAssignmentHistory>();
+        for (const a of this.counsellorAssignments) {
+          asgnMap.set(a.id, a);
+        }
+        for (const fa of firestoreAssignments) {
+          asgnMap.set(fa.id, fa);
+        }
+        this.counsellorAssignments = Array.from(asgnMap.values()).sort(
+          (a, b) => new Date(b.changedAt).getTime() - new Date(a.changedAt).getTime()
+        );
+        this.saveToStorage();
+        this.notify();
+      }
+    } catch (err: any) {
+      console.warn('[DataService] Firestore assignments sync notice:', err?.message || err);
+    }
+  }
+
+  /**
+   * Authoritative synchronization of forms and workflows from Cloud Firestore
+   */
+  public async syncFormsAndWorkflowsFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const formsSnap = await getDocs(collection(db, 'forms'));
+      if (!formsSnap.empty) {
+        const firestoreForms: FormDefinition[] = [];
+        formsSnap.forEach((docSnap) => {
+          const data = docSnap.data() as FormDefinition;
+          if (data && data.name) {
+            firestoreForms.push({ ...data, id: data.id || docSnap.id });
+          }
+        });
+        if (firestoreForms.length > 0) {
+          const fMap = new Map<string, FormDefinition>();
+          for (const f of this.forms) fMap.set(f.id, f);
+          for (const ff of firestoreForms) fMap.set(ff.id, ff);
+          this.forms = Array.from(fMap.values());
+        }
+      }
+
+      const wfSnap = await getDocs(collection(db, 'workflows'));
+      if (!wfSnap.empty) {
+        const firestoreWfs: WorkflowStage[] = [];
+        wfSnap.forEach((docSnap) => {
+          const data = docSnap.data() as WorkflowStage;
+          if (data && data.stageName) {
+            firestoreWfs.push({ ...data, id: data.id || docSnap.id });
+          }
+        });
+        if (firestoreWfs.length > 0) {
+          const wMap = new Map<string, WorkflowStage>();
+          for (const w of this.workflows) wMap.set(w.id, w);
+          for (const fw of firestoreWfs) wMap.set(fw.id, fw);
+          this.workflows = Array.from(wMap.values()).sort((a, b) => a.order - b.order);
+        }
+      }
+      this.cleanseWorkflows();
+      this.saveToStorage();
+      this.notify();
+    } catch (err: any) {
+      console.warn('[DataService] Firestore forms/workflows sync notice:', err?.message || err);
+    }
+  }
+
+  /**
+   * Authoritative synchronization of notifications from Cloud Firestore
+   */
+  public async syncNotificationsFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const snap = await getDocs(collection(db, 'notifications'));
+      if (!snap.empty) {
+        const firestoreNotifs: NotificationLog[] = [];
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as NotificationLog;
+          if (data && data.messageBody) {
+            firestoreNotifs.push({ ...data, id: data.id || docSnap.id });
+          }
+        });
+        if (firestoreNotifs.length > 0) {
+          const nMap = new Map<string, NotificationLog>();
+          for (const n of this.notifications) nMap.set(n.id, n);
+          for (const fn of firestoreNotifs) nMap.set(fn.id, fn);
+          this.notifications = Array.from(nMap.values()).sort(
+            (a, b) => new Date(b.scheduledFor || b.sentAt || 0).getTime() - new Date(a.scheduledFor || a.sentAt || 0).getTime()
+          );
+          this.saveToStorage();
+          this.notify();
+        }
+      }
+    } catch (err: any) {
+      console.warn('[DataService] Firestore notifications sync notice:', err?.message || err);
     }
   }
 
@@ -941,7 +1166,11 @@ class DataService {
     return list.sort((a, b) => new Date(b.changedAt).getTime() - new Date(a.changedAt).getTime());
   }
 
-  public assignCounsellor(clientId: string, staffId: string, reason?: string): { success: boolean; error?: string; assignment?: CounsellorAssignmentHistory } {
+  public async assignCounsellor(
+    clientId: string,
+    staffId: string,
+    reason?: string
+  ): Promise<{ success: boolean; error?: string; assignment?: CounsellorAssignmentHistory }> {
     const client = this.clients.find((c) => c.id === clientId);
     const staff = this.staff.find((s) => s.id === staffId);
     if (!client) {
@@ -971,14 +1200,9 @@ class DataService {
     const prevStaff = this.staff.find((s) => s.id === previousCounsellorId);
     const previousCounsellorName = prevStaff?.name || client.assignedCounsellorName || (previousCounsellorId ? 'Previous Counsellor' : 'None (Initial Registration)');
 
-    // 1. Update client record
-    client.assignedCounsellorId = staff.id;
-    client.assignedCounsellorName = staff.name;
-    client.lastActivityDate = new Date().toISOString();
-
     const assignerName = currentUser?.name || 'Super User';
 
-    // 2. Create permanent assignment history record
+    // 1. Permanent assignment history record
     const assignmentRecord: CounsellorAssignmentHistory = {
       id: `asgn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       clientId: client.id,
@@ -993,9 +1217,7 @@ class DataService {
       reason: reason?.trim() || (isReassignment ? 'Clinical workload rebalancing' : 'Initial intake assignment'),
     };
 
-    this.counsellorAssignments.unshift(assignmentRecord);
-
-    // 3. Notification for new counsellor ONLY (strictly targeted to this counsellor's user ID)
+    // 2. Notification for new counsellor ONLY (strictly targeted to this counsellor's user ID)
     const notifTitle = isReassignment ? 'Client Reassigned' : 'New Client Assigned';
     const notifBody = isReassignment
       ? `${client.id} has been reassigned to you.`
@@ -1018,11 +1240,9 @@ class DataService {
       isRead: false,
     };
 
-    this.notifications.unshift(counsellorNotification);
-
-    // 4. Notification for previous counsellor if reassigned
+    let prevNotif: NotificationLog | null = null;
     if (isReassignment && previousCounsellorId && prevStaff) {
-      this.notifications.unshift({
+      prevNotif = {
         id: `notif-prev-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         clientId: client.id,
         clientName: `${client.firstName} ${client.lastName}`,
@@ -1037,7 +1257,42 @@ class DataService {
         scheduledFor: new Date().toISOString(),
         sentAt: new Date().toISOString(),
         isRead: false,
-      });
+      };
+    }
+
+    // 3. Authoritative Cloud Firestore writes: Await confirmation BEFORE updating local state
+    if (db && isFirebaseConfigured) {
+      try {
+        const clientRef = doc(db, 'clients', client.id);
+        await updateDoc(clientRef, cleanForFirestore({
+          assignedCounsellorId: staff.id,
+          assignedCounsellorName: staff.name,
+          lastActivityDate: new Date().toISOString(),
+        }));
+
+        await setDoc(doc(db, 'counsellorAssignments', assignmentRecord.id), cleanForFirestore(assignmentRecord));
+        await setDoc(doc(db, 'notifications', counsellorNotification.id), cleanForFirestore(counsellorNotification));
+        if (prevNotif) {
+          await setDoc(doc(db, 'notifications', prevNotif.id), cleanForFirestore(prevNotif));
+        }
+      } catch (err: any) {
+        console.error('[Firestore] Error persisting counsellor assignment:', err);
+        return {
+          success: false,
+          error: `Failed to persist counsellor assignment in Firestore (${err?.message || err}).`,
+        };
+      }
+    }
+
+    // 4. Update in-memory state only after Firestore acknowledges write
+    client.assignedCounsellorId = staff.id;
+    client.assignedCounsellorName = staff.name;
+    client.lastActivityDate = new Date().toISOString();
+
+    this.counsellorAssignments.unshift(assignmentRecord);
+    this.notifications.unshift(counsellorNotification);
+    if (prevNotif) {
+      this.notifications.unshift(prevNotif);
     }
 
     // 5. Audit log
@@ -1059,27 +1314,7 @@ class DataService {
       console.warn('[Backend] Fetch exception:', err);
     }
 
-    // 7. Firestore synchronization (fallback)
-    if (db) {
-      try {
-        const clientRef = doc(db, 'clients', client.id);
-        updateDoc(clientRef, {
-          assignedCounsellorId: staff.id,
-          assignedCounsellorName: staff.name,
-          lastActivityDate: new Date().toISOString(),
-        }).catch((err) => console.warn('[Firestore] Error updating client counsellor:', err));
-
-        addDoc(collection(db, 'counsellorAssignments'), assignmentRecord)
-          .catch((err) => console.warn('[Firestore] Error writing counsellor assignment:', err));
-
-        addDoc(collection(db, 'notifications'), counsellorNotification)
-          .catch((err) => console.warn('[Firestore] Error writing notification:', err));
-      } catch (err) {
-        console.warn('[Firestore] Sync exception:', err);
-      }
-    }
-
-    // 8. Persist and notify
+    // 7. Persist to storage and notify listeners
     this.saveToStorage();
     this.notify();
 
@@ -1098,27 +1333,26 @@ class DataService {
     if (!member) {
       return { success: false, error: 'Staff member not found' };
     }
-    member.active = active;
-    this.saveToStorage();
-    this.notify();
 
-    // Sync with authService
-    await authService.toggleStaffStatus(member.authUid || staffId, active);
-
-    // Sync with Firestore
+    // 1. Authoritative Cloud Firestore write: Await before updating UI state
     if (db && isFirebaseConfigured) {
       const docId = member.authUid || staffId;
       try {
         await setDoc(doc(db, 'users', docId), { active }, { merge: true });
-      } catch (e) {
-        console.warn('[dataService] Firestore users active patch error:', e);
-      }
-      try {
         await setDoc(doc(db, 'staff', staffId), { active }, { merge: true });
-      } catch (e) {
-        console.warn('[dataService] Firestore staff active patch error:', e);
+      } catch (e: any) {
+        console.error('[dataService] Firestore staff active update error:', e);
+        return { success: false, error: `Failed to update status in Firestore: ${e?.message || e}` };
       }
     }
+
+    // 2. Sync with authService
+    await authService.toggleStaffStatus(member.authUid || staffId, active);
+
+    // 3. Reconcile UI and local state only after Firestore acknowledges write
+    member.active = active;
+    this.saveToStorage();
+    this.notify();
 
     try {
       await fetch(`/api/counsellors/${staffId}/status`, {
@@ -1606,7 +1840,7 @@ class DataService {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
-  public addCaseNote(clientId: string, content: string, followUpDate?: string, tags: string[] = []): CaseNote {
+  public async addCaseNote(clientId: string, content: string, followUpDate?: string, tags: string[] = []): Promise<CaseNote> {
     const user = authService.getCurrentUser();
     if (!user || (user.role !== 'Counsellor' && user.role !== 'Super Admin')) {
       throw new Error('Unauthorized: Only assigned counsellors and administrators can add clinical case notes.');
@@ -1623,9 +1857,19 @@ class DataService {
       followUpDate,
       tags,
     };
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'caseNotes', note.id), cleanForFirestore(note));
+      } catch (err) {
+        console.warn('[DataService] Firestore caseNote write notice:', err);
+      }
+    }
+
     this.caseNotes.unshift(note);
     this.logAudit('ADD_CASE_NOTE', 'CaseNote', note.id, `Added case note for client ${clientId}`);
     this.saveToStorage();
+    this.notify();
     return note;
   }
 
@@ -1645,16 +1889,7 @@ class DataService {
       throw new Error('Unauthorized: Only Super Admin can manage staff profiles.');
     }
 
-    const existingIdx = this.staff.findIndex((s) => s.id === user.id);
-    if (existingIdx >= 0) {
-      this.staff[existingIdx] = { ...this.staff[existingIdx], ...user };
-    } else {
-      this.staff.push(user);
-    }
-    this.saveToStorage();
-    this.logAudit('STAFF_UPDATE', 'Staff', user.id, `Saved staff user ${user.name} (${user.role})`);
-
-    // Sync to Firestore users and staff collections
+    // 1. Authoritative Cloud Firestore writes: Await before updating local state
     if (db && isFirebaseConfigured) {
       const docId = user.authUid || user.id;
       try {
@@ -1672,11 +1907,7 @@ class DataService {
           },
           { merge: true }
         );
-      } catch (e) {
-        console.warn('[dataService] Firestore users update notice:', e);
-      }
 
-      try {
         await setDoc(
           doc(db, 'staff', user.id),
           {
@@ -1686,10 +1917,22 @@ class DataService {
           },
           { merge: true }
         );
-      } catch (e) {
-        console.warn('[dataService] Firestore staff update notice:', e);
+      } catch (e: any) {
+        console.error('[dataService] Firestore staff update error:', e);
+        throw new Error(`Failed to save staff profile in Firestore: ${e?.message || e}`);
       }
     }
+
+    // 2. Reconcile UI and local state only after Firestore acknowledges write
+    const existingIdx = this.staff.findIndex((s) => s.id === user.id);
+    if (existingIdx >= 0) {
+      this.staff[existingIdx] = { ...this.staff[existingIdx], ...user };
+    } else {
+      this.staff.push(user);
+    }
+    this.saveToStorage();
+    this.logAudit('STAFF_UPDATE', 'Staff', user.id, `Saved staff user ${user.name} (${user.role})`);
+    this.notify();
 
     try {
       fetch('/api/staff', {

@@ -1081,13 +1081,29 @@ class DataService {
     return newClient;
   }
 
-  public updateClientStatus(clientId: string, status: ClientStatus, noteReason?: string) {
+  public async updateClientStatus(clientId: string, status: ClientStatus, noteReason?: string): Promise<{ success: boolean; error?: string }> {
     const client = this.clients.find((c) => c.id === clientId);
-    if (!client) return;
+    if (!client) return { success: false, error: 'Client not found' };
 
     const oldStatus = client.status;
+    const now = new Date().toISOString();
+
+    // Authoritative Cloud Firestore status sync first
+    if (db && isFirebaseConfigured && !client.isDemo) {
+      try {
+        await updateDoc(doc(db, 'clients', clientId), {
+          status,
+          lastActivityDate: now,
+        });
+        console.log(`[Firestore] Client ${clientId} status updated to ${status} in Firestore.`);
+      } catch (err: any) {
+        console.error('[Firestore] Update status error:', err);
+        return { success: false, error: `Failed to update status in Firestore: ${err?.message || err}` };
+      }
+    }
+
     client.status = status;
-    client.lastActivityDate = new Date().toISOString();
+    client.lastActivityDate = now;
 
     if (noteReason) {
       this.addCaseNote(
@@ -1111,18 +1127,6 @@ class DataService {
       console.warn('[Backend] Fetch update status error:', e);
     }
 
-    // Authoritative Cloud Firestore status sync
-    if (db && isFirebaseConfigured && !client.isDemo) {
-      try {
-        updateDoc(doc(db, 'clients', clientId), {
-          status,
-          lastActivityDate: client.lastActivityDate,
-        }).catch((err) => console.warn('[Firestore] Update status sync error:', err));
-      } catch (err) {
-        console.warn('[Firestore] Update status exception:', err);
-      }
-    }
-
     if (oldStatus !== status) {
       this.statusListeners.forEach((listener) => {
         try {
@@ -1132,6 +1136,8 @@ class DataService {
         }
       });
     }
+
+    return { success: true };
   }
 
   /**
@@ -1407,7 +1413,7 @@ class DataService {
     return this.forms.find((f) => f.id === id || f.code === id);
   }
 
-  public saveForm(form: FormDefinition) {
+  public async saveForm(form: FormDefinition): Promise<void> {
     const index = this.forms.findIndex((f) => f.id === form.id);
     if (index >= 0) {
       this.forms[index] = form;
@@ -1416,10 +1422,22 @@ class DataService {
       this.forms.push(form);
       this.logAudit('CREATE_FORM', 'Form', form.id, `Created new form "${form.name}"`);
     }
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'forms', form.id), cleanForFirestore(form), { merge: true });
+        console.log(`[Firestore] Form ${form.id} successfully saved to Firestore.`);
+      } catch (err) {
+        console.error('[Firestore] Error saving form to Firestore:', err);
+        throw err;
+      }
+    }
+
     this.saveToStorage();
+    this.notify();
   }
 
-  public duplicateForm(formId: string): FormDefinition | undefined {
+  public async duplicateForm(formId: string): Promise<FormDefinition | undefined> {
     const original = this.forms.find((f) => f.id === formId);
     if (!original) return undefined;
 
@@ -1432,16 +1450,36 @@ class DataService {
     };
     this.forms.push(copy);
     this.logAudit('CREATE_FORM', 'Form', copy.id, `Duplicated form from "${original.name}"`);
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'forms', copy.id), cleanForFirestore(copy), { merge: true });
+      } catch (err) {
+        console.error('[Firestore] Error duplicating form to Firestore:', err);
+      }
+    }
+
     this.saveToStorage();
+    this.notify();
     return copy;
   }
 
-  public toggleFormActive(formId: string) {
+  public async toggleFormActive(formId: string): Promise<void> {
     const form = this.forms.find((f) => f.id === formId);
     if (form) {
       form.active = !form.active;
       this.logAudit('UPDATE_FORM', 'Form', form.id, `${form.active ? 'Activated' : 'Deactivated'} form "${form.name}"`);
+
+      if (db && isFirebaseConfigured) {
+        try {
+          await updateDoc(doc(db, 'forms', form.id), { active: form.active });
+        } catch (err) {
+          console.error('[Firestore] Error updating form active state:', err);
+        }
+      }
+
       this.saveToStorage();
+      this.notify();
     }
   }
 
@@ -1468,10 +1506,24 @@ class DataService {
       .sort((a, b) => a.order - b.order);
   }
 
-  public saveWorkflows(workflows: WorkflowStage[]) {
+  public async saveWorkflows(workflows: WorkflowStage[]): Promise<void> {
     this.workflows = workflows;
     this.logAudit('UPDATE_WORKFLOW', 'Workflow', 'all', 'Updated assessment pipeline sequence and delay intervals.');
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await Promise.all(
+          workflows.map((w) => setDoc(doc(db, 'workflows', w.id), cleanForFirestore(w), { merge: true }))
+        );
+        console.log('[Firestore] Workflows successfully saved to Firestore.');
+      } catch (err) {
+        console.error('[Firestore] Error saving workflows to Firestore:', err);
+        throw err;
+      }
+    }
+
     this.saveToStorage();
+    this.notify();
   }
 
   // --- Assessment Submissions with Role Enforcement ---

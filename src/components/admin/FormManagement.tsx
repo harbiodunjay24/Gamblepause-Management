@@ -51,39 +51,50 @@ export const FormManagement: React.FC<FormManagementProps> = ({ onPreviewForm })
     setEditingQuestion(null);
   };
 
-  const handleSaveFormMeta = (e: React.FormEvent) => {
+  const handleSaveFormMeta = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedForm) return;
 
-    dataService.saveForm({
-      ...selectedForm,
-      name: formName.trim(),
-      description: formDesc.trim(),
-      instructions: formInstructions.trim(),
-    });
-
-    setIsEditingFormMeta(false);
-    refresh();
+    try {
+      await dataService.saveForm({
+        ...selectedForm,
+        name: formName.trim(),
+        description: formDesc.trim(),
+        instructions: formInstructions.trim(),
+      });
+      setIsEditingFormMeta(false);
+      refresh();
+    } catch (err: any) {
+      alert(`Error saving form: ${err?.message || err}`);
+    }
   };
 
-  const handleToggleActive = (form: FormDefinition) => {
-    dataService.saveForm({
-      ...form,
-      isActive: !form.isActive,
-    });
-    refresh();
+  const handleToggleActive = async (form: FormDefinition) => {
+    try {
+      await dataService.saveForm({
+        ...form,
+        isActive: !form.isActive,
+      });
+      refresh();
+    } catch (err: any) {
+      alert(`Error toggling form active state: ${err?.message || err}`);
+    }
   };
 
-  const handleDuplicateForm = (form: FormDefinition) => {
-    const newForm: FormDefinition = {
-      ...form,
-      id: `form-${Date.now()}`,
-      name: `${form.name} (Copy)`,
-      version: 1,
-    };
-    dataService.saveForm(newForm);
-    refresh();
-    setSelectedForm(newForm);
+  const handleDuplicateForm = async (form: FormDefinition) => {
+    try {
+      const newForm: FormDefinition = {
+        ...form,
+        id: `form-${Date.now()}`,
+        name: `${form.name} (Copy)`,
+        version: 1,
+      };
+      await dataService.saveForm(newForm);
+      refresh();
+      setSelectedForm(newForm);
+    } catch (err: any) {
+      alert(`Error duplicating form: ${err?.message || err}`);
+    }
   };
 
   // Question Management
@@ -104,7 +115,7 @@ export const FormManagement: React.FC<FormManagementProps> = ({ onPreviewForm })
     });
   };
 
-  const handleSaveQuestion = (e: React.FormEvent) => {
+  const handleSaveQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedForm || !editingQuestion) return;
 
@@ -118,29 +129,37 @@ export const FormManagement: React.FC<FormManagementProps> = ({ onPreviewForm })
       );
     }
 
-    dataService.saveForm({
-      ...selectedForm,
-      questions: updatedQuestions,
-    });
+    try {
+      await dataService.saveForm({
+        ...selectedForm,
+        questions: updatedQuestions,
+      });
 
-    setEditingQuestion(null);
-    setIsNewQuestion(false);
-    refresh();
+      setEditingQuestion(null);
+      setIsNewQuestion(false);
+      refresh();
+    } catch (err: any) {
+      alert(`Error saving question: ${err?.message || err}`);
+    }
   };
 
-  const handleDeleteQuestion = (questionId: string) => {
+  const handleDeleteQuestion = async (questionId: string) => {
     if (!selectedForm) return;
     if (!confirm('Are you sure you want to delete this question?')) return;
 
-    const updatedQuestions = selectedForm.questions.filter((q) => q.id !== questionId);
-    dataService.saveForm({
-      ...selectedForm,
-      questions: updatedQuestions,
-    });
-    refresh();
+    try {
+      const updatedQuestions = selectedForm.questions.filter((q) => q.id !== questionId);
+      await dataService.saveForm({
+        ...selectedForm,
+        questions: updatedQuestions,
+      });
+      refresh();
+    } catch (err: any) {
+      alert(`Error deleting question: ${err?.message || err}`);
+    }
   };
 
-  const handleMoveQuestion = (index: number, direction: 'up' | 'down') => {
+  const handleMoveQuestion = async (index: number, direction: 'up' | 'down') => {
     if (!selectedForm) return;
     const questions = [...selectedForm.questions];
     const targetIdx = direction === 'up' ? index - 1 : index + 1;
@@ -150,11 +169,15 @@ export const FormManagement: React.FC<FormManagementProps> = ({ onPreviewForm })
     questions[index] = questions[targetIdx];
     questions[targetIdx] = temp;
 
-    dataService.saveForm({
-      ...selectedForm,
-      questions,
-    });
-    refresh();
+    try {
+      await dataService.saveForm({
+        ...selectedForm,
+        questions,
+      });
+      refresh();
+    } catch (err: any) {
+      alert(`Error reordering question: ${err?.message || err}`);
+    }
   };
 
   return (

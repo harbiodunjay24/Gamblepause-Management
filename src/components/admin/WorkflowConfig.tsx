@@ -21,26 +21,44 @@ export const WorkflowConfig: React.FC = () => {
   const forms = dataService.getForms();
   const [editingStage, setEditingStage] = useState<WorkflowStage | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleUpdateDelay = (stageId: string, delayDays: number) => {
+  React.useEffect(() => {
+    const unsub = dataService.subscribe(() => {
+      setWorkflows(dataService.getWorkflows());
+    });
+    return () => unsub();
+  }, []);
+
+  const handleUpdateDelay = async (stageId: string, delayDays: number) => {
     const updated = workflows.map((w) =>
       w.id === stageId ? { ...w, delayDaysFromPrevious: Math.max(0, delayDays) } : w
     );
-    setWorkflows(updated);
-    dataService.saveWorkflows(updated);
-    showNotice();
+    try {
+      setErrorMessage(null);
+      await dataService.saveWorkflows(updated);
+      setWorkflows(updated);
+      showNotice();
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to update workflow delay in Firestore.');
+    }
   };
 
-  const handleToggleStage = (stageId: string) => {
+  const handleToggleStage = async (stageId: string) => {
     const updated = workflows.map((w) =>
       w.id === stageId ? { ...w, isActive: !w.isActive } : w
     );
-    setWorkflows(updated);
-    dataService.saveWorkflows(updated);
-    showNotice();
+    try {
+      setErrorMessage(null);
+      await dataService.saveWorkflows(updated);
+      setWorkflows(updated);
+      showNotice();
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to toggle stage in Firestore.');
+    }
   };
 
-  const handleMove = (index: number, dir: 'up' | 'down') => {
+  const handleMove = async (index: number, dir: 'up' | 'down') => {
     const targetIdx = dir === 'up' ? index - 1 : index + 1;
     if (targetIdx <= 0 || targetIdx >= workflows.length) return; // Keep registration as step 0
 
@@ -54,9 +72,14 @@ export const WorkflowConfig: React.FC = () => {
       item.order = i;
     });
 
-    setWorkflows(list);
-    dataService.saveWorkflows(list);
-    showNotice();
+    try {
+      setErrorMessage(null);
+      await dataService.saveWorkflows(list);
+      setWorkflows(list);
+      showNotice();
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to reorder stages in Firestore.');
+    }
   };
 
   const showNotice = () => {
@@ -76,6 +99,12 @@ export const WorkflowConfig: React.FC = () => {
             Configure the chronological progression of assessments, delay intervals, and reminder triggers.
           </p>
         </div>
+
+        {errorMessage && (
+          <div className="inline-flex items-center gap-1.5 bg-red-50 text-red-800 border border-red-200 px-3.5 py-2 rounded-xl text-xs font-bold">
+            <span>{errorMessage}</span>
+          </div>
+        )}
 
         {savedSuccess && (
           <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 px-3.5 py-2 rounded-xl text-xs font-bold animate-fade-in">

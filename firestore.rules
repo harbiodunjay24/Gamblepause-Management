@@ -117,8 +117,21 @@ service cloud.firestore {
 
     // Assessment Responses:
     match /assessmentResponses/{responseId} {
-      allow create: if true;
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        request.resource.data.authUid == request.auth.uid ||
+        (request.resource.data.clientId != null &&
+         exists(/databases/$(database)/documents/clients/$(request.resource.data.clientId)) &&
+         get(/databases/$(database)/documents/clients/$(request.resource.data.clientId)).data.authUid == request.auth.uid)
+      );
       allow read: if isSuperAdmin() || (
+        isAuthenticated() && (
+          resource.data.authUid == request.auth.uid ||
+          (resource.data.clientId != null &&
+           exists(/databases/$(database)/documents/clients/$(resource.data.clientId)) &&
+           get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.authUid == request.auth.uid)
+        )
+      ) || (
         isCounsellor() && (
           get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.assignedCounsellorId == request.auth.uid ||
           get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.assignedCounsellorName == getUserData().name
@@ -156,7 +169,7 @@ service cloud.firestore {
     // Audit logs: immutable append-only trail
     match /auditLogs/{logId} {
       allow read: if isSuperAdmin();
-      allow create: if true;
+      allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 

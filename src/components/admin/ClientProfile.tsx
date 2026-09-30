@@ -92,8 +92,11 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
   const assignmentHistory = dataService.getCounsellorAssignments(client.id);
 
   // Status update
-  const handleStatusChange = (newStatus: ClientStatus) => {
-    dataService.updateClientStatus(client.id, newStatus, `Manual status update by ${currentUser.name}`);
+  const handleStatusChange = async (newStatus: ClientStatus) => {
+    const res = await dataService.updateClientStatus(client.id, newStatus, `Manual status update by ${currentUser.name}`);
+    if (!res.success) {
+      alert(`Error updating client status: ${res.error}`);
+    }
   };
 
   // Open Reassignment Modal

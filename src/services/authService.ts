@@ -23,6 +23,7 @@ import {
   query,
   where,
   getDocs,
+  onSnapshot as onFirestoreSnapshot,
 } from 'firebase/firestore';
 
 export interface AuthUser {
@@ -65,6 +66,7 @@ class AuthService {
   private credentials: Record<string, StoredCredential> = {};
   private listeners: Set<(user: AuthUser | null) => void> = new Set();
   private initialized: boolean = false;
+  private sessionUnsubscribe: (() => void) | null = null;
 
   constructor() {
     this.init();
@@ -115,6 +117,7 @@ class AuthService {
 
           let clientId: string | undefined = undefined;
           let displayName = fbUser.displayName || fbUser.email?.split('@')[0] || 'User';
+          let isDeactivated = false;
 
           if (db) {
             try {
@@ -123,6 +126,21 @@ class AuthService {
                 const uData = uDoc.data();
                 if (uData.role) role = uData.role;
                 if (uData.name) displayName = uData.name;
+                if (uData.active === false || uData.status === 'Deactivated') {
+                  isDeactivated = true;
+                }
+              }
+
+              // Also check staff collection for counsellors/staff
+              if (!isDeactivated && role !== 'Client') {
+                const qStaff = query(collection(db, 'staff'), where('email', '==', cleanEmail));
+                const sSnap = await getDocs(qStaff);
+                if (!sSnap.empty) {
+                  const sData = sSnap.docs[0].data();
+                  if (sData.active === false || sData.status === 'Deactivated') {
+                    isDeactivated = true;
+                  }
+                }
               }
 
               // Look up client by authUid where client.authUid == fbUser.uid
@@ -143,6 +161,20 @@ class AuthService {
             }
           }
 
+          // DEFENSE-IN-DEPTH: Immediately terminate session if deactivated
+          if (isDeactivated) {
+            console.warn('[authService] Deactivated account attempted session restore. Signing out immediately.');
+            await signOut(auth);
+            if (this.sessionUnsubscribe) {
+              this.sessionUnsubscribe();
+              this.sessionUnsubscribe = null;
+            }
+            this.currentUser = null;
+            sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+            this.notify();
+            return;
+          }
+
           const authUser: AuthUser = {
             id: fbUser.uid,
             name: displayName,
@@ -154,6 +186,34 @@ class AuthService {
 
           this.currentUser = authUser;
           sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+
+          // Active session watchdog: detect deactivation in real-time
+          if (this.sessionUnsubscribe) {
+            this.sessionUnsubscribe();
+            this.sessionUnsubscribe = null;
+          }
+          if (db) {
+            this.sessionUnsubscribe = onFirestoreSnapshot(doc(db, 'users', fbUser.uid), async (snap) => {
+              if (snap.exists()) {
+                const data = snap.data();
+                if (data.active === false || data.status === 'Deactivated') {
+                  console.warn('[authService] Account deactivated in real-time. Immediately terminating session.');
+                  await signOut(auth);
+                  if (this.sessionUnsubscribe) {
+                    this.sessionUnsubscribe();
+                    this.sessionUnsubscribe = null;
+                  }
+                  this.currentUser = null;
+                  sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+                  this.notify();
+                  if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+                    window.location.href = '/admin/login?deactivated=1';
+                  }
+                }
+              }
+            });
+          }
+
           this.notify();
         }
       });
@@ -392,6 +452,7 @@ class AuthService {
       let clientId: string | undefined = undefined;
       let displayName = fbUser.displayName || cleanEmail.split('@')[0];
       let isActive = true;
+      let isDeactivated = false;
 
       if (db) {
         try {
@@ -402,7 +463,10 @@ class AuthService {
               role = isSuperAdminEmail ? 'Super Admin' : uData.role;
             }
             if (uData.name) displayName = uData.name;
-            if (uData.active !== undefined) isActive = Boolean(uData.active);
+            if (uData.active === false || uData.status === 'Deactivated') {
+              isActive = false;
+              isDeactivated = true;
+            }
           } else if (isSuperAdminEmail) {
             // Ensure Super Admin profile exists in Firestore users/{uid}
             displayName = cleanEmail === 'ayodejiharbiodun24@gmail.com' ? 'Abiodun Ayodeji' : 'Ladipo Abiose';
@@ -414,11 +478,25 @@ class AuthService {
                 email: cleanEmail,
                 role: 'Super Admin',
                 active: true,
+                status: 'Active',
                 authUid: fbUser.uid,
                 createdAt: serverTimestamp(),
               },
               { merge: true }
             );
+          }
+
+          // Authoritative staff collection verification
+          if (!isDeactivated && role !== 'Client') {
+            const qStaff = query(collection(db, 'staff'), where('email', '==', cleanEmail));
+            const sSnap = await getDocs(qStaff);
+            if (!sSnap.empty) {
+              const sData = sSnap.docs[0].data();
+              if (sData.active === false || sData.status === 'Deactivated') {
+                isActive = false;
+                isDeactivated = true;
+              }
+            }
           }
 
           // Authoritative lookup: find Firestore client where client.authUid == fbUser.uid
@@ -439,11 +517,19 @@ class AuthService {
         }
       }
 
-      if (!isActive) {
+      // DEFENSE-IN-DEPTH CHECK: Deactivated accounts MUST NOT enter any protected route
+      if (!isActive || isDeactivated) {
         await signOut(auth);
+        if (this.sessionUnsubscribe) {
+          this.sessionUnsubscribe();
+          this.sessionUnsubscribe = null;
+        }
+        this.currentUser = null;
+        sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+        this.notify();
         return {
           success: false,
-          error: 'This account has been deactivated. Please contact a Super Admin.',
+          error: 'Your account has been deactivated. Please contact an administrator.',
         };
       }
 
@@ -489,7 +575,7 @@ class AuthService {
       if (err?.code === 'auth/user-disabled') {
         return {
           success: false,
-          error: 'This account has been deactivated. Please contact a Super Admin.',
+          error: 'Your account has been deactivated. Please contact an administrator.',
         };
       }
       // As requested: IF EMAIL / PASSWORD ARE INCORRECT DISPLAY "PASSWORD OR EMAIL INCORRECT"
@@ -554,6 +640,10 @@ class AuthService {
    * Log out active user and clear session immediately
    */
   public async logout(): Promise<void> {
+    if (this.sessionUnsubscribe) {
+      this.sessionUnsubscribe();
+      this.sessionUnsubscribe = null;
+    }
     try {
       await signOut(auth);
     } catch (e) {
@@ -835,14 +925,31 @@ class AuthService {
     });
     this.saveCredentials();
 
+    const status = active ? 'Active' : 'Deactivated';
+    const currentAdminUid = auth.currentUser?.uid || 'super-admin';
+    const now = serverTimestamp();
+    const updateObj = active
+      ? {
+          active: true,
+          status: 'Active',
+          reactivatedAt: now,
+          reactivatedBy: currentAdminUid,
+        }
+      : {
+          active: false,
+          status: 'Deactivated',
+          deactivatedAt: now,
+          deactivatedBy: currentAdminUid,
+        };
+
     if (db && isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'users', userId), { active }, { merge: true });
+        await setDoc(doc(db, 'users', userId), updateObj, { merge: true });
       } catch {
         // Ignore
       }
       try {
-        await setDoc(doc(db, 'staff', userId), { active }, { merge: true });
+        await setDoc(doc(db, 'staff', userId), updateObj, { merge: true });
       } catch {
         // Ignore
       }

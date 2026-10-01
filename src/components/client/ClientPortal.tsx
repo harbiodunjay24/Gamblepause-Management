@@ -122,6 +122,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   // Clinical assessment stages only (Registration/Biodata is already displayed above as completed)
   const assessmentStages = workflows.filter((stage) => {
+    if (stage.isActive === false) return false;
     const sName = (stage.stageName || '').toLowerCase().trim();
     const sId = (stage.id || '').toLowerCase().trim();
     const fId = (stage.formId || '').toLowerCase().trim();
@@ -342,6 +343,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                                     })
                                   : 'Upcoming'
                               }`
+                          : stage.delayDaysFromPrevious === 0
+                          ? 'Ready immediately upon reaching stage'
                           : `Unlocks after ${stage.delayDaysFromPrevious} days interval`}
                       </div>
                     </div>

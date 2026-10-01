@@ -21,6 +21,17 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
   const [resetError, setResetError] = useState<string | null>(null);
   const [isSendingReset, setIsSendingReset] = useState(false);
 
+  React.useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('deactivated') === '1') {
+        setError('Your account has been deactivated. Please contact an administrator.');
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);

@@ -302,8 +302,15 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        {/* Selected Client Clinical Case View */}
-        {selectedClient ? (
+        {!dataService.isAuthoritativeLoaded() && clients.length === 0 ? (
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
+            <div className="text-center space-y-3">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+              <p className="text-sm font-bold text-gray-800">Connecting to Cloud Firestore...</p>
+              <p className="text-xs text-gray-400">Loading assigned counsellor caseload</p>
+            </div>
+          </div>
+        ) : selectedClient ? (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
               <button

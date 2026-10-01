@@ -47,6 +47,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return () => unsub();
   }, []);
 
+  const isLoaded = dataService.isAuthoritativeLoaded();
   const rawClients = dataService.getClients();
   const staff = dataService.getStaff();
   const metrics = dataService.getDashboardMetrics();
@@ -76,6 +77,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return true;
     });
   }, [rawClients, currentUser, selectedStatus, selectedCounsellor, selectedState, selectedGender, dateRange]);
+
+  if (!isLoaded && rawClients.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
+          <div className="text-center space-y-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+            <p className="text-sm font-bold text-gray-800">Synchronizing with Cloud Firestore...</p>
+            <p className="text-xs text-gray-400">Loading authoritative client records and assessment trajectories</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleTriggerAutomatedCheck = async () => {
     const res = await NotificationService.runAutomatedChecks();

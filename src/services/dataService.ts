@@ -32,6 +32,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   query,
   where,
@@ -85,22 +86,36 @@ class DataService {
   private statusListeners: Set<(client: Client, oldStatus: ClientStatus, newStatus: ClientStatus) => void> = new Set();
   private eventSource: EventSource | null = null;
   private firestoreClientsUnsubscribe: (() => void) | null = null;
+  private firestoreWorkflowsUnsubscribe: (() => void) | null = null;
+  private firestoreFormsUnsubscribe: (() => void) | null = null;
   private firestoreSyncActive: boolean = false;
+  private authoritativeLoaded: boolean = false;
 
   constructor() {
     this.loadFromStorage();
     this.cleanseStaleStaff();
     this.cleanseWorkflows();
     this.syncAllFromFirestore();
-    this.syncWithBackend();
     this.initRealtimeEvents();
     // Re-sync with Firestore whenever auth state changes (e.g. login/logout)
     authService.subscribe((user) => {
       if (user) {
         this.syncAllFromFirestore();
+      } else {
+        this.clients = [];
+        this.authoritativeLoaded = false;
       }
       this.notify();
     });
+  }
+
+  public isAuthoritativeLoaded(): boolean {
+    return this.authoritativeLoaded;
+  }
+
+  public async ensureAuthoritativeData(): Promise<void> {
+    if (this.authoritativeLoaded) return;
+    await this.syncAllFromFirestore();
   }
 
   /**
@@ -126,9 +141,21 @@ class DataService {
       return;
     }
 
+    const user = authService.getCurrentUser();
+    if (!user) {
+      // Clients collection is protected by firestore.rules; await valid authentication
+      return;
+    }
+
     try {
       const clientsCol = collection(db, 'clients');
-      const snap = await getDocs(clientsCol);
+      let snap;
+      try {
+        snap = await getDocsFromServer(clientsCol);
+      } catch {
+        snap = await getDocs(clientsCol);
+      }
+
       const firestoreClients: Client[] = [];
       snap.forEach((docSnap) => {
         const data = docSnap.data() as Client;
@@ -140,9 +167,14 @@ class DataService {
         }
       });
 
-      if (firestoreClients.length > 0) {
-        this.mergeFirestoreClients(firestoreClients);
-      }
+      this.clients = firestoreClients.sort((a, b) => {
+        const timeA = new Date(a.registrationDate).getTime() || 0;
+        const timeB = new Date(b.registrationDate).getTime() || 0;
+        return timeB - timeA;
+      });
+      this.authoritativeLoaded = true;
+      this.saveToStorage();
+      this.notify();
 
       // Refresh real-time snapshot listener
       if (this.firestoreClientsUnsubscribe) {
@@ -163,9 +195,14 @@ class DataService {
               });
             }
           });
-          if (realtimeClients.length > 0) {
-            this.mergeFirestoreClients(realtimeClients);
-          }
+          this.clients = realtimeClients.sort((a, b) => {
+            const timeA = new Date(a.registrationDate).getTime() || 0;
+            const timeB = new Date(b.registrationDate).getTime() || 0;
+            return timeB - timeA;
+          });
+          this.authoritativeLoaded = true;
+          this.saveToStorage();
+          this.notify();
         },
         (err) => {
           console.warn('[DataService] Firestore real-time clients listener warning:', err?.message || err);
@@ -316,6 +353,7 @@ class DataService {
   public async syncFormsAndWorkflowsFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
     try {
+      // 1. Sync Forms
       const formsSnap = await getDocs(collection(db, 'forms'));
       if (!formsSnap.empty) {
         const firestoreForms: FormDefinition[] = [];
@@ -326,13 +364,35 @@ class DataService {
           }
         });
         if (firestoreForms.length > 0) {
-          const fMap = new Map<string, FormDefinition>();
-          for (const f of this.forms) fMap.set(f.id, f);
-          for (const ff of firestoreForms) fMap.set(ff.id, ff);
-          this.forms = Array.from(fMap.values());
+          this.forms = firestoreForms.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        }
+      } else {
+        // Seed standard GamblePause forms into Firestore so Firestore is single source of truth
+        const seedForms = [...INITIAL_FORMS];
+        for (const f of seedForms) {
+          setDoc(doc(db, 'forms', f.id), cleanForFirestore(f), { merge: true }).catch(() => {});
         }
       }
 
+      if (this.firestoreFormsUnsubscribe) {
+        this.firestoreFormsUnsubscribe();
+      }
+      this.firestoreFormsUnsubscribe = onSnapshot(collection(db, 'forms'), (snapshot) => {
+        const realtimeForms: FormDefinition[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as FormDefinition;
+          if (data && data.name) {
+            realtimeForms.push({ ...data, id: data.id || docSnap.id });
+          }
+        });
+        if (realtimeForms.length > 0) {
+          this.forms = realtimeForms.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          this.saveToStorage();
+          this.notify();
+        }
+      });
+
+      // 2. Sync Workflows
       const wfSnap = await getDocs(collection(db, 'workflows'));
       if (!wfSnap.empty) {
         const firestoreWfs: WorkflowStage[] = [];
@@ -343,12 +403,29 @@ class DataService {
           }
         });
         if (firestoreWfs.length > 0) {
-          const wMap = new Map<string, WorkflowStage>();
-          for (const w of this.workflows) wMap.set(w.id, w);
-          for (const fw of firestoreWfs) wMap.set(fw.id, fw);
-          this.workflows = Array.from(wMap.values()).sort((a, b) => a.order - b.order);
+          this.workflows = firestoreWfs.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         }
       }
+
+      if (this.firestoreWorkflowsUnsubscribe) {
+        this.firestoreWorkflowsUnsubscribe();
+      }
+      this.firestoreWorkflowsUnsubscribe = onSnapshot(collection(db, 'workflows'), (snapshot) => {
+        const realtimeWfs: WorkflowStage[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as WorkflowStage;
+          if (data && data.stageName) {
+            realtimeWfs.push({ ...data, id: data.id || docSnap.id });
+          }
+        });
+        if (realtimeWfs.length > 0) {
+          this.workflows = realtimeWfs.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          this.cleanseWorkflows();
+          this.saveToStorage();
+          this.notify();
+        }
+      });
+
       this.cleanseWorkflows();
       this.saveToStorage();
       this.notify();
@@ -389,34 +466,18 @@ class DataService {
   }
 
   /**
-   * Merges real Firestore clients authoritatively while preserving local demo data without migration
+   * Merges real Firestore clients authoritatively without keeping stale demo records
    */
   private mergeFirestoreClients(firestoreClients: Client[]): void {
-    if (!Array.isArray(firestoreClients) || firestoreClients.length === 0) return;
+    if (!Array.isArray(firestoreClients)) return;
 
-    const clientMap = new Map<string, Client>();
-
-    // 1. Preserve existing demo records in memory for demo testing
-    for (const existing of this.clients) {
-      if (existing.isDemo) {
-        clientMap.set(existing.id, existing);
-      }
-    }
-
-    // 2. Merge authoritative real client records from Firestore
-    for (const fc of firestoreClients) {
-      clientMap.set(fc.id, {
-        ...fc,
-        isDemo: false,
-      });
-    }
-
-    this.clients = Array.from(clientMap.values()).sort((a, b) => {
+    this.clients = firestoreClients.sort((a, b) => {
       const timeA = new Date(a.registrationDate).getTime() || 0;
       const timeB = new Date(b.registrationDate).getTime() || 0;
       return timeB - timeA;
     });
 
+    this.authoritativeLoaded = true;
     this.saveToStorage();
     this.notify();
   }
@@ -482,7 +543,7 @@ class DataService {
     });
 
     // 2. Ensure the Initial Assessment stage exists
-    const hasInitial = this.workflows.some((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1');
+    const hasInitial = this.workflows.some((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1' || w.formId === 'form-initial');
     if (!hasInitial) {
       this.workflows.unshift({
         id: 'stage-initial',
@@ -495,10 +556,10 @@ class DataService {
       });
     }
 
-    // 3. Ensure proper sequential ordering and non-registration flag
+    // 3. Ensure proper non-registration flag for initial stage without mutating custom delays
     this.workflows.forEach((w, idx) => {
-      w.order = idx + 1;
-      if (w.id === 'stage-initial' || w.formId === 'form-recovery-1') {
+      w.order = typeof w.order === 'number' ? w.order : idx + 1;
+      if (w.id === 'stage-initial' || w.formId === 'form-recovery-1' || w.formId === 'form-initial') {
         w.delayDaysFromPrevious = 0;
         w.isInitialRegistration = false;
         if (!w.stageName || w.stageName.toLowerCase().includes('registration')) {
@@ -513,52 +574,9 @@ class DataService {
   }
 
   public async syncWithBackend(): Promise<void> {
-    if (typeof window === 'undefined') return;
-    try {
-      const [clientsRes, staffRes, submissionsRes, notifsRes, assignmentsRes, notesRes] = await Promise.allSettled([
-        fetch('/api/clients').then((r) => r.ok ? r.json() : null),
-        fetch('/api/staff').then((r) => r.ok ? r.json() : null),
-        fetch('/api/submissions').then((r) => r.ok ? r.json() : null),
-        fetch('/api/notifications').then((r) => r.ok ? r.json() : null),
-        fetch('/api/counsellor-assignments').then((r) => r.ok ? r.json() : null),
-        fetch('/api/case-notes').then((r) => r.ok ? r.json() : null),
-      ]);
-
-      let changed = false;
-
-      if (clientsRes.status === 'fulfilled' && Array.isArray(clientsRes.value) && clientsRes.value.length > 0) {
-        this.clients = clientsRes.value;
-        changed = true;
-      }
-      if (staffRes.status === 'fulfilled' && Array.isArray(staffRes.value) && staffRes.value.length > 0) {
-        this.staff = staffRes.value;
-        this.cleanseStaleStaff();
-        changed = true;
-      }
-      if (submissionsRes.status === 'fulfilled' && Array.isArray(submissionsRes.value)) {
-        this.submissions = submissionsRes.value;
-        changed = true;
-      }
-      if (notifsRes.status === 'fulfilled' && Array.isArray(notifsRes.value)) {
-        this.notifications = notifsRes.value;
-        changed = true;
-      }
-      if (assignmentsRes.status === 'fulfilled' && Array.isArray(assignmentsRes.value)) {
-        this.counsellorAssignments = assignmentsRes.value;
-        changed = true;
-      }
-      if (notesRes.status === 'fulfilled' && Array.isArray(notesRes.value)) {
-        this.caseNotes = notesRes.value;
-        changed = true;
-      }
-
-      if (changed) {
-        this.saveToStorage();
-        this.notify();
-      }
-    } catch (err) {
-      console.warn('[DataService] Backend sync completed with local fallback:', err);
-    }
+    // Cloud Firestore is the single authoritative source of truth.
+    // Local server json cache does not overwrite production Firestore data.
+    return;
   }
 
   private initRealtimeEvents() {
@@ -1340,35 +1358,67 @@ class DataService {
       return { success: false, error: 'Staff member not found' };
     }
 
+    const currentAdmin = authService.getCurrentUser();
+    const adminUid = currentAdmin?.id || 'super-admin';
+    const adminName = currentAdmin?.name || 'Super Admin';
+    const authUid = member.authUid || member.id;
+    const statusStr = active ? 'Active' : 'Deactivated';
+    const now = serverTimestamp();
+
+    const firestoreUpdate = active
+      ? {
+          active: true,
+          status: 'Active',
+          reactivatedAt: now,
+          reactivatedBy: adminUid,
+        }
+      : {
+          active: false,
+          status: 'Deactivated',
+          deactivatedAt: now,
+          deactivatedBy: adminUid,
+        };
+
     // 1. Authoritative Cloud Firestore write: Await before updating UI state
     if (db && isFirebaseConfigured) {
-      const docId = member.authUid || staffId;
       try {
-        await setDoc(doc(db, 'users', docId), { active }, { merge: true });
-        await setDoc(doc(db, 'staff', staffId), { active }, { merge: true });
+        await setDoc(doc(db, 'staff', staffId), firestoreUpdate, { merge: true });
+        if (authUid) {
+          await setDoc(doc(db, 'users', authUid), firestoreUpdate, { merge: true });
+        }
       } catch (e: any) {
         console.error('[dataService] Firestore staff active update error:', e);
         return { success: false, error: `Failed to update status in Firestore: ${e?.message || e}` };
       }
     }
 
-    // 2. Sync with authService
-    await authService.toggleStaffStatus(member.authUid || staffId, active);
-
-    // 3. Reconcile UI and local state only after Firestore acknowledges write
-    member.active = active;
-    this.saveToStorage();
-    this.notify();
-
+    // 2. Disable/Enable Firebase Authentication account and server credentials
     try {
-      await fetch(`/api/counsellors/${staffId}/status`, {
-        method: 'PATCH',
+      await fetch(`/api/staff/${staffId}/set-status`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: active ? 'Active' : 'Inactive' }),
+        body: JSON.stringify({ active, status: statusStr, authUid, adminUid }),
       });
     } catch (e) {
-      console.warn('Backend staff status patch failed:', e);
+      console.warn('[dataService] Backend staff status patch notice:', e);
     }
+
+    // 3. Sync with authService
+    await authService.toggleStaffStatus(authUid, active);
+
+    // 4. Audit Log
+    this.logAudit(
+      active ? 'REACTIVATE_STAFF' : 'DEACTIVATE_STAFF',
+      'Staff',
+      staffId,
+      `Staff/Counsellor "${member.name}" (${member.role}) ${active ? 'reactivated' : 'deactivated'} by ${adminName}.`
+    );
+
+    // 5. Reconcile UI and local state only after Firestore acknowledges write
+    member.active = active;
+    member.status = statusStr as any;
+    this.saveToStorage();
+    this.notify();
 
     return { success: true };
   }
@@ -1410,7 +1460,17 @@ class DataService {
   }
 
   public getFormById(id: string): FormDefinition | undefined {
-    return this.forms.find((f) => f.id === id || f.code === id);
+    const directMatch = this.forms.find((f) => f.id === id || f.code === id);
+    if (directMatch) return directMatch;
+
+    // Authoritative fallback mapping between pipeline stage form IDs and clinical forms
+    if (id === 'form-initial') return this.forms.find((f) => f.id === 'form-recovery-1');
+    if (id === 'form-followup-1') return this.forms.find((f) => f.id === 'form-assessment-2');
+    if (id === 'form-followup-2') return this.forms.find((f) => f.id === 'form-assessment-3');
+    if (id === 'form-recovery-progress') return this.forms.find((f) => f.id === 'form-assessment-4' || f.id === 'form-assessment-5');
+    if (id === 'form-final') return this.forms.find((f) => f.id === 'form-feedback' || f.id === 'form-assessment-5');
+
+    return undefined;
   }
 
   public async saveForm(form: FormDefinition): Promise<void> {
@@ -1484,9 +1544,10 @@ class DataService {
   }
 
   // --- Workflows ---
-  public getWorkflows(): WorkflowStage[] {
+  public getWorkflows(includeInactive: boolean = false): WorkflowStage[] {
     return [...this.workflows]
       .filter((w) => {
+        if (!includeInactive && w.isActive === false) return false;
         const name = (w.stageName || '').toLowerCase().trim();
         const id = (w.id || '').toLowerCase().trim();
         const formId = (w.formId || '').toLowerCase().trim();
@@ -1503,7 +1564,7 @@ class DataService {
           formId === 'form-registration'
         );
       })
-      .sort((a, b) => a.order - b.order);
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }
 
   public async saveWorkflows(workflows: WorkflowStage[]): Promise<void> {
@@ -1733,20 +1794,22 @@ class DataService {
       client.riskLevel = riskLevel === 'Severe' ? 'High' : riskLevel;
     }
 
-    let delayDays = form.waitingDaysAfterCompletion || 7;
+    let delayDays = typeof form.waitingDaysAfterCompletion === 'number' ? form.waitingDaysAfterCompletion : 7;
 
     if (nextStage) {
-      delayDays = nextStage.delayDaysFromPrevious || form.waitingDaysAfterCompletion || 7;
+      delayDays = typeof nextStage.delayDaysFromPrevious === 'number'
+        ? nextStage.delayDaysFromPrevious
+        : (typeof form.waitingDaysAfterCompletion === 'number' ? form.waitingDaysAfterCompletion : 7);
       const nextDueDate = new Date();
       nextDueDate.setDate(nextDueDate.getDate() + delayDays);
 
       client.currentStageId = nextStage.id;
       client.currentStageName = nextStage.stageName;
       client.nextAssessmentId = nextStage.formId;
-      const nextForm = this.forms.find((f) => f.id === nextStage.formId);
+      const nextForm = this.getFormById(nextStage.formId);
       client.nextAssessmentName = nextForm ? nextForm.name : nextStage.stageName;
       client.nextAssessmentDueDate = nextDueDate.toISOString();
-      client.status = 'Active';
+      client.status = delayDays === 0 ? 'Assessment Due' : 'Active';
 
       // Queue automated reminder for the next assessment
       this.queueNotification({

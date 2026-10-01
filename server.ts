@@ -4,11 +4,30 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
+import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
+
+/**
+ * Attempts to disable/enable user account in Firebase Authentication directly
+ */
+async function updateFirebaseAuthUserStatus(authUid: string, disabled: boolean): Promise<boolean> {
+  if (!authUid) return false;
+  try {
+    const adminApp = getAdminApps().length > 0 ? getAdminApps()[0] : initAdminApp({ projectId: 'gamblepause-africa' });
+    const adminAuth = getAdminAuth(adminApp);
+    await adminAuth.updateUser(authUid, { disabled });
+    console.log(`[Firebase Admin] Successfully set auth user ${authUid} disabled=${disabled}`);
+    return true;
+  } catch (err: any) {
+    console.warn(`[Firebase Admin] updateUser(${authUid}, disabled=${disabled}) notice:`, err?.message || err);
+    return false;
+  }
+}
 
 // ---------------------------------------------------------
 // Types & Data Structures
@@ -912,8 +931,8 @@ app.get('/api/counsellors', (req, res) => {
   res.json(counsellors);
 });
 
-app.patch('/api/counsellors/:id/status', (req, res) => {
-  const { status } = req.body; // 'Active' | 'Inactive' | 'Archived'
+app.patch('/api/counsellors/:id/status', async (req, res) => {
+  const { status, authUid } = req.body; // 'Active' | 'Inactive' | 'Archived' | 'Deactivated'
   const counsellor = db.staff.find((s) => s.id === req.params.id);
 
   if (!counsellor) {
@@ -924,9 +943,15 @@ app.patch('/api/counsellors/:id/status', (req, res) => {
   counsellor.active = isActive;
   counsellor.status = status;
 
+  // Disable/enable Firebase Auth account if UID provided or matches
+  const targetUid = authUid || counsellor.id;
+  if (targetUid) {
+    await updateFirebaseAuthUserStatus(targetUid, !isActive);
+  }
+
   // Also update corresponding login credential active state
   for (const k of Object.keys(db.credentials)) {
-    if (db.credentials[k].userId === counsellor.id) {
+    if (db.credentials[k].userId === counsellor.id || (authUid && db.credentials[k].userId === authUid)) {
       db.credentials[k].active = isActive;
     }
   }
@@ -935,6 +960,38 @@ app.patch('/api/counsellors/:id/status', (req, res) => {
   broadcastEvent('COUNSELLOR_STATUS_CHANGED', { counsellorId: counsellor.id, status });
 
   res.json({ success: true, counsellor });
+});
+
+app.post('/api/staff/:id/set-status', async (req, res) => {
+  const { active, status, authUid } = req.body;
+  const staffMember = db.staff.find((s) => s.id === req.params.id);
+
+  const isActive = Boolean(active);
+  const statusStr = status || (isActive ? 'Active' : 'Deactivated');
+
+  if (staffMember) {
+    staffMember.active = isActive;
+    staffMember.status = statusStr;
+  }
+
+  const targetUid = authUid || staffMember?.id;
+  if (targetUid) {
+    await updateFirebaseAuthUserStatus(targetUid, !isActive);
+  }
+
+  for (const k of Object.keys(db.credentials)) {
+    if (
+      (staffMember && db.credentials[k].userId === staffMember.id) ||
+      (authUid && db.credentials[k].userId === authUid)
+    ) {
+      db.credentials[k].active = isActive;
+    }
+  }
+
+  saveDatabase();
+  broadcastEvent('STAFF_STATUS_CHANGED', { staffId: req.params.id, active: isActive, status: statusStr });
+
+  return res.json({ success: true, active: isActive, status: statusStr });
 });
 
 // Staff API

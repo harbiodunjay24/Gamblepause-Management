@@ -45,6 +45,7 @@ export const ClientList: React.FC<ClientListProps> = ({
     return () => unsub();
   }, []);
 
+  const isLoaded = dataService.isAuthoritativeLoaded();
   const clients = dataService.getClients();
   const staff = dataService.getStaff();
 
@@ -76,6 +77,20 @@ export const ClientList: React.FC<ClientListProps> = ({
       return true;
     });
   }, [clients, searchQuery, statusFilter, counsellorFilter, stateFilter]);
+
+  if (!isLoaded && clients.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
+          <div className="text-center space-y-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+            <p className="text-sm font-bold text-gray-800">Loading client directory from Cloud Firestore...</p>
+            <p className="text-xs text-gray-400">Verifying authoritative records</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const copyAssessmentLink = (client: Client, e: React.MouseEvent) => {
     e.stopPropagation();

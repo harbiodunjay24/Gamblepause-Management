@@ -503,10 +503,45 @@ class DataService {
           firestoreStaff.push({
             ...data,
             id: data.id || docSnap.id,
-            active: data.active !== false,
+            active: data.active !== false && data.status !== 'Deactivated',
+            status: data.status || (data.active !== false ? 'Active' : 'Deactivated'),
           });
         }
       });
+
+      // Also reconcile users collection documents for Super Admin and Staff
+      try {
+        const usersSnap = await getDocs(collection(db, 'users'));
+        usersSnap.forEach((docSnap) => {
+          const u = docSnap.data();
+          if (u && u.role && u.role !== 'Client') {
+            const existing = firestoreStaff.find(
+              (s) => s.authUid === docSnap.id || (u.email && s.email?.toLowerCase() === u.email?.toLowerCase())
+            );
+            if (existing) {
+              existing.authUid = docSnap.id;
+              if (u.name) existing.name = u.name;
+              if (u.email) existing.email = u.email;
+              if (u.role) existing.role = u.role;
+              if (u.status) existing.status = u.status;
+              if (u.active !== undefined) existing.active = u.active !== false && u.status !== 'Deactivated';
+            } else if (u.name && u.email) {
+              firestoreStaff.push({
+                id: `user-${docSnap.id.substring(0, 10)}`,
+                authUid: docSnap.id,
+                name: u.name,
+                email: u.email,
+                role: u.role,
+                active: u.active !== false && u.status !== 'Deactivated',
+                status: u.status || (u.active !== false ? 'Active' : 'Deactivated'),
+              });
+            }
+          }
+        });
+      } catch (uErr) {
+        console.warn('[DataService] Firestore users sync notice:', uErr);
+      }
+
       if (firestoreStaff.length > 0) {
         this.mergeFirestoreStaff(firestoreStaff);
       }
@@ -2356,6 +2391,225 @@ class DataService {
 
     this.notify();
     return user;
+  }
+
+  /**
+   * Safe email synchronization for Super Admin user management.
+   * Updates users/{uid}.email (and linked staff/{id}.email if present)
+   * NEVER changes the Firebase UID or document ID.
+   * Preserves all other profile fields (active, status, role, username, etc.).
+   */
+  public async syncUserEmail(params: {
+    uid: string;
+    newEmail: string;
+    staffId?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser || currentUser.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can manage user emails.' };
+    }
+
+    const { uid, newEmail, staffId } = params;
+    const cleanEmail = (newEmail || '').trim().toLowerCase();
+
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return { success: false, error: 'Please enter a valid email address (e.g. user@gamblepause.org).' };
+    }
+
+    if (!uid) {
+      return { success: false, error: 'Missing required Firebase UID.' };
+    }
+
+    if (db && isFirebaseConfigured) {
+      try {
+        // 1. Verify target doc exists and retrieve existing email for audit
+        const userDocRef = doc(db, 'users', uid);
+        const userDocSnap = await getDoc(userDocRef);
+        const oldEmail = userDocSnap.exists() ? (userDocSnap.data()?.email || '') : '';
+
+        // 2. Targeted merge update on users/{uid} - NEVER replaces document or changes UID
+        await setDoc(
+          userDocRef,
+          {
+            email: cleanEmail,
+            emailUpdatedAt: serverTimestamp(),
+            emailUpdatedBy: currentUser.id || currentUser.email,
+          },
+          { merge: true }
+        );
+
+        // 3. If a linked staff/{staffId} record exists, update its email as well
+        if (staffId) {
+          await setDoc(
+            doc(db, 'staff', staffId),
+            {
+              email: cleanEmail,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } else {
+          // Check if any staff doc has authUid == uid
+          const staffQuery = query(collection(db, 'staff'), where('authUid', '==', uid));
+          const staffSnap = await getDocs(staffQuery);
+          for (const sDoc of staffSnap.docs) {
+            await setDoc(
+              doc(db, 'staff', sDoc.id),
+              {
+                email: cleanEmail,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        }
+
+        // 4. Create audit log entry per requirement 17
+        try {
+          const auditRef = doc(collection(db, 'auditLogs'));
+          await setDoc(auditRef, {
+            id: auditRef.id,
+            action: 'email_changed',
+            targetType: 'User',
+            targetId: uid,
+            targetUid: uid,
+            oldEmail: oldEmail || null,
+            newEmail: cleanEmail,
+            performedByUid: currentUser.authUid || currentUser.id,
+            performedByEmail: currentUser.email,
+            actingSuperAdminUid: currentUser.authUid || currentUser.id,
+            actingSuperAdminEmail: currentUser.email,
+            timestamp: new Date().toISOString(),
+            createdAt: serverTimestamp(),
+          });
+        } catch (auditErr) {
+          console.warn('[DataService] Non-blocking audit log notice:', auditErr);
+        }
+
+        console.log(`[Firestore] users/${uid}.email successfully synchronized to ${cleanEmail}`);
+      } catch (err: any) {
+        console.error('[DataService] Error synchronizing email in Firestore:', err);
+        return { success: false, error: err?.message || 'Firestore write error' };
+      }
+    }
+
+    // 5. Update local memory state without changing UID or active status
+    const staffIdx = this.staff.findIndex((s) => s.authUid === uid || s.id === staffId || s.id === uid);
+    if (staffIdx >= 0) {
+      this.staff[staffIdx].email = cleanEmail;
+    }
+    this.saveToStorage();
+    this.logAudit(
+      'EMAIL_CHANGED',
+      'User',
+      uid,
+      `User email synchronized to ${cleanEmail} by ${currentUser.name || currentUser.email}`
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  /**
+   * Links and synchronizes Steven Benjamin's Super Admin profile in Firestore
+   * using the actual Firebase Authentication UID generated in Firebase Console.
+   */
+  public async syncStevenBenjamin(uid: string): Promise<{ success: boolean; error?: string }> {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser || currentUser.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can configure Super Admin profiles.' };
+    }
+
+    const cleanUid = (uid || '').trim();
+    if (!cleanUid || cleanUid.length < 5) {
+      return { success: false, error: 'Please enter a valid Firebase Authentication UID from the Firebase Console.' };
+    }
+
+    const stevenProfile: StaffUser = {
+      id: 'staff-steven',
+      authUid: cleanUid,
+      name: 'Steven Benjamin',
+      email: 'stevobenjo@gmail.com',
+      role: 'Super Admin',
+      active: true,
+      status: 'Active',
+      phone: '+234 800 000 0000',
+      assignedClientsCount: 0,
+    };
+
+    if (db && isFirebaseConfigured) {
+      try {
+        // Write to users/{uid} with actual Firebase Auth UID as document ID
+        await setDoc(
+          doc(db, 'users', cleanUid),
+          {
+            id: cleanUid,
+            authUid: cleanUid,
+            name: stevenProfile.name,
+            email: stevenProfile.email,
+            role: 'Super Admin',
+            active: true,
+            status: 'Active',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        // Also write to staff/staff-steven
+        await setDoc(
+          doc(db, 'staff', stevenProfile.id),
+          {
+            ...stevenProfile,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        // Audit log
+        try {
+          const auditRef = doc(collection(db, 'auditLogs'));
+          await setDoc(auditRef, {
+            id: auditRef.id,
+            action: 'superadmin_registered',
+            targetType: 'User',
+            targetId: cleanUid,
+            targetUid: cleanUid,
+            name: 'Steven Benjamin',
+            email: 'stevobenjo@gmail.com',
+            performedByUid: currentUser.authUid || currentUser.id,
+            performedByEmail: currentUser.email,
+            timestamp: new Date().toISOString(),
+            createdAt: serverTimestamp(),
+          });
+        } catch {}
+
+        console.log(`[Firestore] Steven Benjamin Super Admin profile created/synced at users/${cleanUid}`);
+      } catch (err: any) {
+        console.error('[DataService] Error saving Steven Benjamin in Firestore:', err);
+        return { success: false, error: err?.message || 'Firestore write error' };
+      }
+    }
+
+    // Update in-memory state
+    const existingIdx = this.staff.findIndex(
+      (s) => s.authUid === cleanUid || s.email?.toLowerCase() === stevenProfile.email.toLowerCase()
+    );
+    if (existingIdx >= 0) {
+      this.staff[existingIdx] = { ...this.staff[existingIdx], ...stevenProfile };
+    } else {
+      this.staff.push(stevenProfile);
+    }
+    this.saveToStorage();
+    this.logAudit(
+      'SUPERADMIN_REGISTERED',
+      'User',
+      cleanUid,
+      `Steven Benjamin registered as Super Admin by ${currentUser.name || currentUser.email}`
+    );
+    this.notify();
+    return { success: true };
   }
 
   // --- Notifications ---

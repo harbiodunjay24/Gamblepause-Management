@@ -13,6 +13,8 @@ import {
   reauthenticateWithCredential,
   updatePassword,
   sendPasswordResetEmail,
+  verifyBeforeUpdateEmail,
+  updateEmail,
 } from 'firebase/auth';
 import {
   doc,
@@ -102,7 +104,8 @@ class AuthService {
 
           if (
             cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
-            cleanEmail === 'ladipo.abiose@gamblepause.org'
+            cleanEmail === 'ladipo.abiose@gamblepause.org' ||
+            cleanEmail === 'stevobenjo@gmail.com'
           ) {
             role = 'Super Admin';
           } else if (
@@ -409,17 +412,18 @@ class AuthService {
 
     const isSuperAdminEmail =
       cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
-      cleanEmail === 'ladipo.abiose@gamblepause.org';
+      cleanEmail === 'ladipo.abiose@gamblepause.org' ||
+      cleanEmail === 'stevobenjo@gmail.com';
 
     try {
       let cred;
       try {
         cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
       } catch (signInErr: any) {
-        // If it's a known Super Admin and account does not exist in Firebase Auth yet,
+        // If it's an initial setup Super Admin (Abiodun/Ladipo) and account does not exist in Firebase Auth yet,
         // provision it securely in Firebase Auth with the password provided on first sign-in
         if (
-          isSuperAdminEmail &&
+          (cleanEmail === 'ayodejiharbiodun24@gmail.com' || cleanEmail === 'ladipo.abiose@gamblepause.org') &&
           (signInErr.code === 'auth/user-not-found' || signInErr.code === 'auth/invalid-credential')
         ) {
           try {
@@ -469,7 +473,10 @@ class AuthService {
             }
           } else if (isSuperAdminEmail) {
             // Ensure Super Admin profile exists in Firestore users/{uid}
-            displayName = cleanEmail === 'ayodejiharbiodun24@gmail.com' ? 'Abiodun Ayodeji' : 'Ladipo Abiose';
+            displayName =
+              cleanEmail === 'ayodejiharbiodun24@gmail.com'
+                ? 'Abiodun Ayodeji'
+                : (cleanEmail === 'stevobenjo@gmail.com' ? 'Steven Benjamin' : 'Ladipo Abiose');
             await setDoc(
               doc(db, 'users', fbUser.uid),
               {
@@ -743,6 +750,99 @@ class AuthService {
     } catch (e: any) {
       console.warn('[authService] sendPasswordResetEmail notice:', e);
       return { success: false, error: e.message || 'Failed to send password reset email.' };
+    }
+  }
+
+  /**
+   * Allows the currently authenticated user (e.g. Super Admin) to update their own email.
+   * Respects Firebase Authentication security requirements (re-authentication if needed).
+   * Upon successful update, refreshes the auth profile and synchronizes users/{uid}.email.
+   */
+  public async updateCurrentUserEmail(
+    newEmail: string,
+    currentPassword?: string
+  ): Promise<{ success: boolean; requiresReauth?: boolean; error?: string; message?: string }> {
+    const user = auth.currentUser;
+    if (!user) {
+      return { success: false, error: 'No active authenticated user session.' };
+    }
+
+    const cleanEmail = (newEmail || '').trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return { success: false, error: 'Please enter a valid email address.' };
+    }
+
+    if (cleanEmail === (user.email || '').toLowerCase()) {
+      return { success: false, error: 'New email is identical to the current email.' };
+    }
+
+    // If currentPassword is provided, attempt re-authentication first
+    if (currentPassword && user.email) {
+      try {
+        const cred = EmailAuthProvider.credential(user.email, currentPassword);
+        await reauthenticateWithCredential(user, cred);
+      } catch (reauthErr: any) {
+        return {
+          success: false,
+          error: `Re-authentication failed: ${reauthErr?.message || reauthErr?.code || 'Invalid password'}`,
+        };
+      }
+    }
+
+    try {
+      try {
+        await verifyBeforeUpdateEmail(user, cleanEmail);
+        return {
+          success: true,
+          message: `Verification link sent to ${cleanEmail}. Please click the link in your inbox to confirm the Firebase Authentication email change. Once verified, return to GamblePause to sync your profile.`,
+        };
+      } catch (verifyErr: any) {
+        if (verifyErr.code === 'auth/requires-recent-login') {
+          return {
+            success: false,
+            requiresReauth: true,
+            error: 'This operation is sensitive and requires recent authentication. Please enter your current password to proceed.',
+          };
+        }
+        // Fallback to updateEmail if verifyBeforeUpdateEmail is not supported
+        await updateEmail(user, cleanEmail);
+        await user.reload();
+
+        if (db) {
+          await setDoc(
+            doc(db, 'users', user.uid),
+            {
+              email: cleanEmail,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+
+        if (this.currentUser && this.currentUser.id === user.uid) {
+          this.currentUser.email = cleanEmail;
+          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(this.currentUser));
+          this.notify();
+        }
+
+        return {
+          success: true,
+          message: `Your email address has been successfully updated to ${cleanEmail}.`,
+        };
+      }
+    } catch (err: any) {
+      if (err.code === 'auth/requires-recent-login') {
+        return {
+          success: false,
+          requiresReauth: true,
+          error: 'This operation is sensitive and requires recent authentication. Please enter your current password to proceed.',
+        };
+      }
+      return {
+        success: false,
+        error: err?.message || err?.code || 'Failed to update email in Firebase Authentication.',
+      };
     }
   }
 

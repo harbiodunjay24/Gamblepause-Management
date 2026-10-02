@@ -15,6 +15,9 @@ import {
   ShieldCheck,
   FileText,
   X,
+  ExternalLink,
+  Info,
+  HelpCircle,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { authService } from '../../services/authService';
@@ -39,6 +42,20 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
   });
   const [addStaffError, setAddStaffError] = useState<string | null>(null);
   const [isAddingStaff, setIsAddingStaff] = useState(false);
+
+  // Email management modal state
+  const [editingEmailUser, setEditingEmailUser] = useState<StaffUser | null>(null);
+  const [newEmailInput, setNewEmailInput] = useState('');
+  const [confirmConsoleSync, setConfirmConsoleSync] = useState(false);
+  const [isSyncingEmail, setIsSyncingEmail] = useState(false);
+  const [emailSyncError, setEmailSyncError] = useState<string | null>(null);
+  const [selfCurrentPassword, setSelfCurrentPassword] = useState('');
+
+  // Steven Benjamin manual sync state
+  const [showStevenModal, setShowStevenModal] = useState(false);
+  const [stevenUidInput, setStevenUidInput] = useState('');
+  const [isSyncingSteven, setIsSyncingSteven] = useState(false);
+  const [stevenError, setStevenError] = useState<string | null>(null);
 
   // Password change state for Super Admin
   const [currentPwd, setCurrentPwd] = useState('');
@@ -172,6 +189,126 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
     }
   };
 
+  const handleOpenChangeEmail = (member: StaffUser) => {
+    setEditingEmailUser(member);
+    setNewEmailInput('');
+    setConfirmConsoleSync(false);
+    setEmailSyncError(null);
+    setSelfCurrentPassword('');
+  };
+
+  const handleSyncUserEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmailUser) return;
+    setEmailSyncError(null);
+
+    const cleanEmail = newEmailInput.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      setEmailSyncError('Please enter a valid email address (e.g. employee@gamblepause.org).');
+      return;
+    }
+    if (cleanEmail === editingEmailUser.email.toLowerCase()) {
+      setEmailSyncError('The new email is identical to the current email.');
+      return;
+    }
+
+    const isSelf = editingEmailUser.id === currentUser.id || editingEmailUser.authUid === currentUser.id;
+
+    setIsSyncingEmail(true);
+    try {
+      if (isSelf) {
+        // Self email update through Firebase Authentication client flow
+        const authRes = await authService.updateCurrentUserEmail(cleanEmail, selfCurrentPassword);
+        if (!authRes.success) {
+          setEmailSyncError(authRes.error || 'Failed to update email in Firebase Authentication.');
+          setIsSyncingEmail(false);
+          return;
+        }
+
+        // Synchronize Firestore profile
+        const targetUid = editingEmailUser.authUid || editingEmailUser.id;
+        await dataService.syncUserEmail({
+          uid: targetUid,
+          newEmail: cleanEmail,
+          staffId: editingEmailUser.id,
+        });
+
+        setActionFeedback({
+          type: 'success',
+          message:
+            authRes.message ||
+            `Your email has been successfully updated to ${cleanEmail}. Firebase UID (${targetUid}) remained identical.`,
+        });
+      } else {
+        // Another user: Ensure Super Admin confirmed manual update in Firebase Console
+        if (!confirmConsoleSync) {
+          setEmailSyncError('Please confirm that you have updated the email in Firebase Console first.');
+          setIsSyncingEmail(false);
+          return;
+        }
+
+        const targetUid = editingEmailUser.authUid || editingEmailUser.id;
+        const res = await dataService.syncUserEmail({
+          uid: targetUid,
+          newEmail: cleanEmail,
+          staffId: editingEmailUser.id,
+        });
+
+        if (!res.success) {
+          setEmailSyncError(res.error || 'Failed to synchronize email in Firestore.');
+          setIsSyncingEmail(false);
+          return;
+        }
+
+        setActionFeedback({
+          type: 'success',
+          message: `Firestore profile email synchronized to ${cleanEmail} for ${editingEmailUser.name}. Permanent Firebase UID (${targetUid}) remained identical.`,
+        });
+      }
+
+      setEditingEmailUser(null);
+      setTimeout(() => setActionFeedback(null), 7000);
+    } catch (err: any) {
+      setEmailSyncError(err?.message || 'Error synchronizing email.');
+    } finally {
+      setIsSyncingEmail(false);
+    }
+  };
+
+  const handleSyncStevenBenjamin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStevenError(null);
+
+    const cleanUid = stevenUidInput.trim();
+    if (!cleanUid || cleanUid.length < 5) {
+      setStevenError('Please enter a valid Firebase Authentication UID copied from the Firebase Console.');
+      return;
+    }
+
+    setIsSyncingSteven(true);
+    try {
+      const res = await dataService.syncStevenBenjamin(cleanUid);
+      if (!res.success) {
+        setStevenError(res.error || 'Failed to link Steven Benjamin in Firestore.');
+        setIsSyncingSteven(false);
+        return;
+      }
+
+      setShowStevenModal(false);
+      setStevenUidInput('');
+      setActionFeedback({
+        type: 'success',
+        message: `Steven Benjamin registered successfully as Super Admin with Firebase UID: ${cleanUid}.`,
+      });
+      setTimeout(() => setActionFeedback(null), 7000);
+    } catch (err: any) {
+      setStevenError(err?.message || 'Error synchronizing Steven Benjamin.');
+    } finally {
+      setIsSyncingSteven(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Action Notification Banner */}
@@ -212,17 +349,31 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         </div>
 
         {currentUser.role === 'Super Admin' && (
-          <button
-            onClick={() => {
-              setAddStaffError(null);
-              setShowAddModal(true);
-            }}
-            id="add-staff-member-btn"
-            className="inline-flex items-center gap-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-4 py-2.5 rounded-xl shadow-md shadow-red-500/20 transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Counsellor / Staff</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => {
+                setStevenUidInput('');
+                setStevenError(null);
+                setShowStevenModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-800 bg-gray-100 hover:bg-gray-200 border border-gray-300 px-3.5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs"
+              title="Link or synchronize Steven Benjamin using his Firebase Auth UID"
+            >
+              <ShieldCheck className="w-4 h-4 text-red-600" />
+              <span>Setup / Sync Steven Benjamin</span>
+            </button>
+            <button
+              onClick={() => {
+                setAddStaffError(null);
+                setShowAddModal(true);
+              }}
+              id="add-staff-member-btn"
+              className="inline-flex items-center gap-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-4 py-2.5 rounded-xl shadow-md shadow-red-500/20 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Counsellor / Staff</span>
+            </button>
+          </div>
         )}
       </div>
 

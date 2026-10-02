@@ -54,7 +54,7 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
           (cl) => cl.assignedCounsellorId === c.id && cl.status !== 'Closed' && cl.status !== 'Completed'
         );
         const totalClients = allClients.filter((cl) => cl.assignedCounsellorId === c.id);
-        const status = c.active !== false ? 'Active' : 'Inactive';
+        const status: 'Active' | 'Inactive' = c.active !== false ? 'Active' : 'Inactive';
         return {
           ...c,
           assignedClientsCount: activeClients.length,

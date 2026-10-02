@@ -78,7 +78,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [rawClients, currentUser, selectedStatus, selectedCounsellor, selectedState, selectedGender, dateRange]);
 
-  if (!isLoaded && rawClients.length === 0) {
+  if (!isLoaded) {
     return (
       <div className="space-y-6">
         <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
@@ -102,11 +102,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const stageCounts = useMemo(() => {
     const counts: Record<string, number> = {
       'Client Registration': rawClients.length,
-      'Initial Assessment': rawClients.filter((c) => c.totalAssessmentsCompleted >= 1).length,
-      'Follow-up 1': rawClients.filter((c) => c.totalAssessmentsCompleted >= 2).length,
-      'Follow-up 2': rawClients.filter((c) => c.totalAssessmentsCompleted >= 3).length,
-      'Recovery Progress': rawClients.filter((c) => c.totalAssessmentsCompleted >= 4).length,
-      'Final Assessment': rawClients.filter((c) => c.totalAssessmentsCompleted >= 5).length,
+      'Assessment 1.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 1).length,
+      'Assessment 2.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 2).length,
+      'Assessment 3.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 3).length,
+      'Assessment 4.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 4).length,
+      'Assessment 5.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 5).length,
+      'Client Feedback': rawClients.filter((c) => c.totalAssessmentsCompleted >= 6).length,
     };
     return counts;
   }, [rawClients]);

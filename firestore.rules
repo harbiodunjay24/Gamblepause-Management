@@ -173,9 +173,9 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Global settings: readable by staff, editable by Super Admin
+    // Global settings: readable by all, editable by Super Admin
     match /settings/{settingId} {
-      allow read: if isStaff();
+      allow read: if true;
       allow write: if isSuperAdmin();
     }
   }

@@ -10,6 +10,8 @@ import {
   Sparkles,
   User,
   Shield,
+  AlertTriangle,
+  FlaskConical,
 } from 'lucide-react';
 import { Client, WorkflowStage, FormDefinition } from '../../types';
 import { dataService } from '../../services/dataService';
@@ -53,7 +55,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
       if (isMounted) {
         setClient(foundClient || null);
-        setWorkflows(dataService.getWorkflows());
+        setWorkflows(dataService.getWorkflows(false));
         setForms(dataService.getForms());
         setIsLoading(false);
       }
@@ -114,7 +116,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   }
 
   const submissions = dataService.getSubmissionsByClientId(client.id);
-  const completedFormIds = new Set(submissions.map((s) => s.formId));
+  const completedFormIds = new Set(
+    submissions.map((s) => s.formId).concat(submissions.map((s) => s.stageId))
+  );
+
+  const accessMode = dataService.getAssessmentAccessMode();
+  const isTestingMode = accessMode === 'testing';
 
   // Determine current active/ready assessment form
   const activeFormId = client.nextAssessmentId === 'form-initial' ? 'form-recovery-1' : (client.nextAssessmentId || 'form-recovery-1');
@@ -122,11 +129,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   // Clinical assessment stages only (Registration/Biodata is already displayed above as completed)
   const assessmentStages = workflows.filter((stage) => {
-    if (stage.isActive === false) return false;
+    if (stage.isActive === false || stage.isLegacy === true) return false;
     const sName = (stage.stageName || '').toLowerCase().trim();
     const sId = (stage.id || '').toLowerCase().trim();
     const fId = (stage.formId || '').toLowerCase().trim();
     if (
+      sId === 'stage-initial' ||
+      sId === 'stage-followup-1' ||
+      sId === 'stage-followup-2' ||
+      sId === 'stage-recovery' ||
+      sId === 'stage-final' ||
+      sName === 'initial assessment' ||
+      sName === 'follow-up assessment 1' ||
+      sName === 'follow-up assessment 2' ||
+      sName === 'recovery progress assessment' ||
+      sName === 'final assessment' ||
       sName === 'client registration / biodata' ||
       sName === 'registration & biodata' ||
       sName === 'client registration' ||
@@ -144,11 +161,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   });
 
   // Check whether next assessment is currently due
+  // In Testing Mode: waiting intervals are temporarily bypassed!
   const isAssessmentDue =
     client.status !== 'Completed' &&
     client.status !== 'Closed' &&
     activeFormId &&
-    (!client.nextAssessmentDueDate || new Date(client.nextAssessmentDueDate).getTime() <= new Date().getTime());
+    (isTestingMode || !client.nextAssessmentDueDate || new Date(client.nextAssessmentDueDate).getTime() <= Date.now());
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col justify-between font-sans">
@@ -193,6 +211,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
       {/* Main Client Content */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-8 space-y-8">
+        {/* Testing Mode Persistent Alert Banner */}
+        {isTestingMode && (
+          <div className="bg-amber-100 border border-amber-300 p-4 rounded-2xl flex items-start gap-3 text-amber-950 text-xs shadow-xs animate-fade-in">
+            <FlaskConical className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-extrabold uppercase text-[11px] tracking-wide text-amber-900">
+                TESTING MODE ACTIVE — Assessment waiting periods are temporarily bypassed.
+              </p>
+              <p className="mt-0.5 text-amber-900/90 leading-relaxed">
+                Super Admin has enabled temporary open access for application testing. You may open and submit all active assessments in your journey without waiting for future unlock dates. All submitted responses and evaluations are recorded in the live database.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Welcome Greeting Banner */}
         <div className="p-6 sm:p-8 rounded-3xl bg-white border border-gray-200 shadow-sm relative overflow-hidden">
           <div className="relative z-10 space-y-3">
@@ -282,19 +315,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
             {/* Assessment Stages */}
             {assessmentStages.map((stage, idx) => {
-              const formDef = forms.find((f) => f.id === stage.formId) ||
-                (stage.id === 'stage-initial' || stage.formId === 'form-recovery-1' ? forms.find((f) => f.id === 'form-recovery-1') : undefined);
+              const formDef =
+                forms.find((f) => f.id === stage.formId) ||
+                (stage.id === 'stage-assessment-1' || stage.id === 'stage-initial' || stage.formId === 'form-recovery-1'
+                  ? forms.find((f) => f.id === 'form-recovery-1')
+                  : undefined);
               const isCompleted =
                 (formDef ? completedFormIds.has(formDef.id) : false) ||
-                (Boolean(client.lastAssessmentDate) && (stage.id === 'stage-initial' || stage.formId === 'form-recovery-1')) ||
+                completedFormIds.has(stage.id) ||
+                (stage.formId === 'form-recovery-1' && (completedFormIds.has('form-initial') || completedFormIds.has('stage-initial'))) ||
                 ((client.totalAssessmentsCompleted || 0) > idx);
               const isCurrent =
                 !isCompleted && (
                   client.nextAssessmentId === stage.formId ||
                   client.currentStageId === stage.id ||
-                  (stage.id === 'stage-initial' && !client.lastAssessmentDate && (!client.nextAssessmentId || client.nextAssessmentId === 'form-initial' || client.nextAssessmentId === 'form-recovery-1'))
+                  ((stage.id === 'stage-assessment-1' || stage.id === 'stage-initial') &&
+                    !client.lastAssessmentDate &&
+                    (!client.nextAssessmentId || client.nextAssessmentId === 'form-initial' || client.nextAssessmentId === 'form-recovery-1'))
                 );
-              const isLocked = !isCompleted && !isCurrent;
+              const isAccessible = !isCompleted && (isTestingMode || (isCurrent && isAssessmentDue));
+              const isLocked = !isCompleted && !isAccessible;
 
               return (
                 <div
@@ -304,6 +344,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       ? 'bg-red-50/40 border-red-300 shadow-xs'
                       : isCompleted
                       ? 'bg-white border-gray-200'
+                      : isAccessible
+                      ? 'bg-amber-50/30 border-amber-200'
                       : 'bg-gray-50/70 border-gray-200 opacity-70'
                   } flex items-center justify-between`}
                 >
@@ -312,26 +354,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
                         isCompleted
                           ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : isCurrent
+                          : isAccessible
                           ? 'bg-red-600 text-white'
                           : 'bg-gray-200 text-gray-500'
                       }`}
                     >
                       {isCompleted ? (
                         <CheckCircle2 className="w-4 h-4" />
-                      ) : isCurrent ? (
-                        <span>{idx + 1}</span>
                       ) : (
-                        <Lock className="w-3.5 h-3.5" />
+                        <span>{idx + 1}</span>
                       )}
                     </div>
                     <div>
-                      <div className={`text-sm font-bold ${isCurrent ? 'text-gray-950' : 'text-gray-800'}`}>
+                      <div className={`text-sm font-bold ${isAccessible ? 'text-gray-950' : 'text-gray-800'}`}>
                         {stage.stageName}
                       </div>
                       <div className="text-xs text-gray-500">
                         {isCompleted
                           ? 'Responses securely recorded'
+                          : isTestingMode
+                          ? 'Available for immediate testing'
                           : isCurrent
                           ? isAssessmentDue
                             ? 'Ready for completion'
@@ -355,12 +397,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
                         ✓ Completed
                       </span>
-                    ) : isCurrent && isAssessmentDue ? (
+                    ) : isAccessible ? (
                       <button
-                        onClick={() => onStartAssessment(stage.formId === 'form-initial' ? 'form-recovery-1' : (stage.formId || activeFormId || 'form-recovery-1'))}
-                        className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
+                        onClick={() =>
+                          onStartAssessment(
+                            stage.formId === 'form-initial' ? 'form-recovery-1' : (stage.formId || activeFormId || 'form-recovery-1')
+                          )
+                        }
+                        className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
                       >
-                        Start Now
+                        <span>Start Assessment</span>
+                        <ArrowRight className="w-3 h-3" />
                       </button>
                     ) : isCurrent ? (
                       <span className="text-[11px] font-bold text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 flex items-center gap-1">

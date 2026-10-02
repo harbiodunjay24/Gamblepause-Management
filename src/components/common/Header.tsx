@@ -1,6 +1,7 @@
 import React from 'react';
-import { Shield, Phone, Sparkles, Lock, LogOut, ArrowRight, HeartHandshake } from 'lucide-react';
+import { Shield, Phone, Sparkles, Lock, LogOut, ArrowRight, HeartHandshake, FlaskConical } from 'lucide-react';
 import { AuthUser } from '../../services/authService';
+import { dataService } from '../../services/dataService';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 interface HeaderProps {
@@ -79,6 +80,12 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right side navigation / view switchers */}
         <div className="flex items-center gap-2 sm:gap-3">
           <PWAInstallButton compact />
+          {dataService.getAssessmentAccessMode() === 'testing' && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-extrabold animate-pulse">
+              <FlaskConical className="w-3.5 h-3.5 text-amber-700" />
+              <span>Testing Mode ON</span>
+            </div>
+          )}
           {isAdminView && isAuthenticated && currentUser ? (
             <div className="flex items-center gap-3">
               <div

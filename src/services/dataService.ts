@@ -10,6 +10,7 @@ import {
   AuditLogEntry,
   ScoringRange,
   CounsellorAssignmentHistory,
+  AssessmentAccessMode,
 } from '../types';
 import {
   INITIAL_CLIENTS,
@@ -37,6 +38,7 @@ import {
   query,
   where,
   serverTimestamp,
+  writeBatch,
 } from 'firebase/firestore';
 
 const STORAGE_KEYS = {
@@ -49,6 +51,7 @@ const STORAGE_KEYS = {
   NOTIFICATIONS: 'gamblepause_notifications',
   AUDIT_LOGS: 'gamblepause_audit_logs',
   COUNSELLOR_ASSIGNMENTS: 'gamblepause_counsellor_assignments',
+  SETTINGS: 'gamblepause_settings',
 };
 
 /**
@@ -88,8 +91,10 @@ class DataService {
   private firestoreClientsUnsubscribe: (() => void) | null = null;
   private firestoreWorkflowsUnsubscribe: (() => void) | null = null;
   private firestoreFormsUnsubscribe: (() => void) | null = null;
+  private firestoreSettingsUnsubscribe: (() => void) | null = null;
   private firestoreSyncActive: boolean = false;
   private authoritativeLoaded: boolean = false;
+  private assessmentAccessMode: AssessmentAccessMode = 'scheduled';
 
   constructor() {
     this.loadFromStorage();
@@ -101,6 +106,9 @@ class DataService {
     authService.subscribe((user) => {
       if (user) {
         this.syncAllFromFirestore();
+        if (user.role === 'Super Admin') {
+          this.reconcileCanonicalWorkflowIfSuperAdmin().catch(() => {});
+        }
       } else {
         this.clients = [];
         this.authoritativeLoaded = false;
@@ -129,7 +137,274 @@ class DataService {
       this.syncAssignmentsFromFirestore(),
       this.syncFormsAndWorkflowsFromFirestore(),
       this.syncNotificationsFromFirestore(),
+      this.syncSettingsFromFirestore(),
     ]);
+  }
+
+  /**
+   * Authoritative real-time retrieval of global settings (e.g. assessmentAccessMode) from Cloud Firestore
+   */
+  public async syncSettingsFromFirestore(): Promise<void> {
+    if (!db || !isFirebaseConfigured) return;
+    try {
+      const snap = await getDoc(doc(db, 'settings', 'app'));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && (data.assessmentAccessMode === 'scheduled' || data.assessmentAccessMode === 'testing')) {
+          this.assessmentAccessMode = data.assessmentAccessMode;
+        }
+      }
+
+      if (this.firestoreSettingsUnsubscribe) {
+        this.firestoreSettingsUnsubscribe();
+      }
+      this.firestoreSettingsUnsubscribe = onSnapshot(
+        doc(db, 'settings', 'app'),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data && (data.assessmentAccessMode === 'scheduled' || data.assessmentAccessMode === 'testing')) {
+              const changed = this.assessmentAccessMode !== data.assessmentAccessMode;
+              this.assessmentAccessMode = data.assessmentAccessMode;
+              if (changed) {
+                this.saveToStorage();
+                this.notify();
+              }
+            }
+          }
+        },
+        (err) => {
+          console.warn('[DataService] Firestore settings listener notice:', err?.message || err);
+        }
+      );
+    } catch (err: any) {
+      console.warn('[DataService] Firestore settings sync notice:', err?.message || err);
+    }
+  }
+
+  public getAssessmentAccessMode(): AssessmentAccessMode {
+    return this.assessmentAccessMode;
+  }
+
+  public async setAssessmentAccessMode(mode: AssessmentAccessMode): Promise<{ success: boolean; error?: string }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can configure assessment access mode.' };
+    }
+    if (mode !== 'scheduled' && mode !== 'testing') {
+      return { success: false, error: 'Invalid mode. Must be "scheduled" or "testing".' };
+    }
+
+    const oldMode = this.assessmentAccessMode;
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(
+          doc(db, 'settings', 'app'),
+          {
+            assessmentAccessMode: mode,
+            updatedAt: serverTimestamp(),
+            updatedBy: user.email || user.id,
+            updatedByName: user.name || 'Super Admin',
+          },
+          { merge: true }
+        );
+        console.log(`[Firestore] assessmentAccessMode updated to "${mode}" in settings/app.`);
+      } catch (err: any) {
+        console.error('[DataService] Error saving assessmentAccessMode to Firestore:', err);
+        return { success: false, error: `Firestore Error: ${err?.message || err}` };
+      }
+    }
+
+    this.assessmentAccessMode = mode;
+    this.saveToStorage();
+    this.logAudit(
+      'CHANGE_ACCESS_MODE',
+      'System',
+      'app',
+      `Assessment access mode changed from "${oldMode}" to "${mode}" by ${user.name || user.email}.`
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  public async updateStageDelay(stageId: string, newDelayDays: number): Promise<{ success: boolean; error?: string }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can configure stage delay intervals.' };
+    }
+    if (typeof newDelayDays !== 'number' || isNaN(newDelayDays) || newDelayDays < 0 || !Number.isInteger(newDelayDays)) {
+      return { success: false, error: 'Delay interval must be a valid non-negative integer (e.g. 0, 7, 14).' };
+    }
+
+    const stage = this.workflows.find((w) => w.id === stageId);
+    if (!stage) {
+      return { success: false, error: `Workflow stage "${stageId}" not found.` };
+    }
+
+    const oldDelay = stage.delayDaysFromPrevious;
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(
+          doc(db, 'workflows', stageId),
+          {
+            delayDaysFromPrevious: newDelayDays,
+            updatedAt: serverTimestamp(),
+            updatedBy: user.email || user.id,
+          },
+          { merge: true }
+        );
+        console.log(`[Firestore] Stage "${stageId}" delay updated to ${newDelayDays} days.`);
+      } catch (err: any) {
+        console.error(`[Firestore] Error updating stage delay for ${stageId}:`, err);
+        return { success: false, error: `Firestore Error: ${err?.message || err}` };
+      }
+    }
+
+    stage.delayDaysFromPrevious = newDelayDays;
+    this.saveToStorage();
+    this.logAudit(
+      'UPDATE_WORKFLOW_DELAY',
+      'Workflow',
+      stageId,
+      `Wait interval for stage "${stage.stageName}" updated from ${oldDelay} to ${newDelayDays} days by ${user.name || user.email}.`
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  /**
+   * Atomically reconciles the canonical 6-stage clinical pathway in Cloud Firestore
+   */
+  public async reconcileCanonicalWorkflowIfSuperAdmin(): Promise<{ success: boolean; error?: string }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Super Admin required' };
+    }
+    if (!db || !isFirebaseConfigured) {
+      return { success: false, error: 'Firestore not configured' };
+    }
+
+    try {
+      const batch = writeBatch(db);
+
+      // 1. Six canonical active clinical pathway stages
+      const canonicalStages: WorkflowStage[] = [
+        {
+          id: 'stage-assessment-1',
+          formId: 'form-recovery-1',
+          stageName: 'Assessment 1.0',
+          order: 1,
+          delayDaysFromPrevious: 0,
+          description: 'Baseline clinical assessment, gambling budget, Exercise 1.0, and diagnostic screening.',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+        {
+          id: 'stage-assessment-2',
+          formId: 'form-assessment-2',
+          stageName: 'Assessment 2.0',
+          order: 2,
+          delayDaysFromPrevious: 7,
+          description: 'Dealing With Family Members & Consequences of Gambling.',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+        {
+          id: 'stage-assessment-3',
+          formId: 'form-assessment-3',
+          stageName: 'Assessment 3.0',
+          order: 3,
+          delayDaysFromPrevious: 7,
+          description: 'Developing Alternative Thoughts & Cognitive Restructuring.',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+        {
+          id: 'stage-assessment-4',
+          formId: 'form-assessment-4',
+          stageName: 'Assessment 4.0',
+          order: 4,
+          delayDaysFromPrevious: 7,
+          description: 'Recognizing and Dealing With Triggers (8 Techniques & Homework #5).',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+        {
+          id: 'stage-assessment-5',
+          formId: 'form-assessment-5',
+          stageName: 'Assessment 5.0',
+          order: 5,
+          delayDaysFromPrevious: 7,
+          description: 'Avoiding Avoidance, Rating Coping Strategies & New Activities.',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+        {
+          id: 'stage-feedback',
+          formId: 'form-feedback',
+          stageName: 'Client Feedback',
+          order: 6,
+          delayDaysFromPrevious: 7,
+          description: 'Quality of Psychological Support & Perceived Improvement Evaluation.',
+          isInitialRegistration: false,
+          isActive: true,
+          isLegacy: false,
+        },
+      ];
+
+      for (const st of canonicalStages) {
+        // Preserve any custom delay if already configured by admin
+        const existing = this.workflows.find((w) => w.id === st.id);
+        if (existing && typeof existing.delayDaysFromPrevious === 'number') {
+          st.delayDaysFromPrevious = existing.delayDaysFromPrevious;
+        }
+        batch.set(doc(db, 'workflows', st.id), cleanForFirestore(st), { merge: true });
+      }
+
+      // 2. Mark legacy old 5-stage workflow records inactive
+      const legacyStageIds = [
+        'stage-initial',
+        'stage-followup-1',
+        'stage-followup-2',
+        'stage-recovery',
+        'stage-final',
+      ];
+      for (const legId of legacyStageIds) {
+        batch.set(doc(db, 'workflows', legId), { isActive: false, isLegacy: true }, { merge: true });
+      }
+
+      // 3. Ensure settings document exists
+      batch.set(
+        doc(db, 'settings', 'app'),
+        {
+          assessmentAccessMode: this.assessmentAccessMode || 'scheduled',
+        },
+        { merge: true }
+      );
+
+      await batch.commit();
+      console.log('[Firestore] Canonical 6-stage clinical pathway atomically reconciled in Firestore.');
+
+      // Refresh workflows
+      await this.syncFormsAndWorkflowsFromFirestore();
+      this.logAudit(
+        'RECONCILE_WORKFLOW',
+        'Workflow',
+        'canonical-6-stage',
+        'Canonical 6-stage clinical pathway atomically reconciled in Firestore.'
+      );
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore] Error reconciling canonical workflow in Firestore:', err);
+      return { success: false, error: err?.message || 'Firestore commit error' };
+    }
   }
 
   /**
@@ -515,12 +790,11 @@ class DataService {
 
   /**
    * Cleanses the assessment pipeline so that client registration/biodata (which is already
-   * permanently recorded during signup/intake) does not appear as an artificial locked assessment stage.
+   * permanently recorded during signup/intake) does not appear as an artificial locked assessment stage,
+   * and legacy 5-stage workflow records remain inactive.
    */
   private cleanseWorkflows() {
-    const prevCount = this.workflows.length;
-
-    // 1. Strip any redundant standalone registration / biodata stages
+    // 1. Strip redundant standalone registration / biodata stages
     this.workflows = this.workflows.filter((w) => {
       const name = (w.stageName || '').toLowerCase().trim();
       const id = (w.id || '').toLowerCase().trim();
@@ -542,35 +816,31 @@ class DataService {
       return true;
     });
 
-    // 2. Ensure the Initial Assessment stage exists
-    const hasInitial = this.workflows.some((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1' || w.formId === 'form-initial');
-    if (!hasInitial) {
-      this.workflows.unshift({
-        id: 'stage-initial',
-        formId: 'form-recovery-1',
-        stageName: 'Initial Assessment',
-        order: 1,
-        delayDaysFromPrevious: 0,
-        description: 'Baseline clinical assessment, gambling budget, Exercise 1.0, and diagnostic screening.',
-        isInitialRegistration: false,
-      });
-    }
-
-    // 3. Ensure proper non-registration flag for initial stage without mutating custom delays
-    this.workflows.forEach((w, idx) => {
-      w.order = typeof w.order === 'number' ? w.order : idx + 1;
-      if (w.id === 'stage-initial' || w.formId === 'form-recovery-1' || w.formId === 'form-initial') {
-        w.delayDaysFromPrevious = 0;
-        w.isInitialRegistration = false;
-        if (!w.stageName || w.stageName.toLowerCase().includes('registration')) {
-          w.stageName = 'Initial Assessment';
-        }
+    // 2. Ensure legacy old 5-stage documents are strictly marked inactive
+    this.workflows.forEach((w) => {
+      const id = (w.id || '').toLowerCase().trim();
+      const name = (w.stageName || '').toLowerCase().trim();
+      if (
+        id === 'stage-initial' ||
+        id === 'stage-followup-1' ||
+        id === 'stage-followup-2' ||
+        id === 'stage-recovery' ||
+        id === 'stage-final' ||
+        name === 'initial assessment' ||
+        name === 'follow-up assessment 1' ||
+        name === 'follow-up assessment 2' ||
+        name === 'recovery progress assessment' ||
+        name === 'final assessment'
+      ) {
+        w.isActive = false;
+        w.isLegacy = true;
       }
     });
 
-    if (this.workflows.length !== prevCount) {
-      this.saveToStorage();
-    }
+    // 3. Ensure order numbers are defined
+    this.workflows.forEach((w, idx) => {
+      w.order = typeof w.order === 'number' ? w.order : idx + 1;
+    });
   }
 
   public async syncWithBackend(): Promise<void> {
@@ -1000,9 +1270,10 @@ class DataService {
       ? this.staff.find((s) => s.id === existingClient?.assignedCounsellorId)
       : (activeCounsellors.length > 0 ? activeCounsellors[this.clients.length % activeCounsellors.length] : undefined);
 
-    // Determine initial assessment
-    const initialStage = this.workflows.find((w) => w.id === 'stage-initial' || w.formId === 'form-recovery-1') || this.workflows[0];
-    const initialForm = this.forms.find((f) => f.id === initialStage?.formId || f.id === 'form-recovery-1' || f.code === 'initial_assessment') || this.forms[0];
+    // Determine initial assessment for the canonical 6-stage clinical pathway
+    const activeStages = this.getWorkflows(false);
+    const initialStage = activeStages.find((w) => w.order === 1) || activeStages[0] || this.workflows.find((w) => w.id === 'stage-assessment-1' || w.formId === 'form-recovery-1');
+    const initialForm = this.forms.find((f) => f.id === initialStage?.formId || f.id === 'form-recovery-1') || this.forms[0];
 
     const newClient: Client = {
       ...(existingClient || {}),
@@ -1010,10 +1281,10 @@ class DataService {
       ...biodata,
       registrationDate: existingClient?.registrationDate || now,
       status: 'Active',
-      currentStageId: existingClient?.currentStageId || initialStage?.id || 'stage-initial',
-      currentStageName: existingClient?.currentStageName || initialStage?.stageName || 'Initial Assessment',
-      nextAssessmentId: existingClient?.nextAssessmentId || initialForm?.id,
-      nextAssessmentName: existingClient?.nextAssessmentName || initialForm?.name || 'Initial Assessment',
+      currentStageId: existingClient?.currentStageId || initialStage?.id || 'stage-assessment-1',
+      currentStageName: existingClient?.currentStageName || initialStage?.stageName || 'Assessment 1.0',
+      nextAssessmentId: existingClient?.nextAssessmentId || initialForm?.id || 'form-recovery-1',
+      nextAssessmentName: existingClient?.nextAssessmentName || initialForm?.name || 'Assessment 1.0',
       nextAssessmentDueDate: existingClient?.nextAssessmentDueDate || now, // ready immediately upon registration
       assignedCounsellorId: existingClient?.assignedCounsellorId || assignedCounsellor?.id,
       assignedCounsellorName: existingClient?.assignedCounsellorName || assignedCounsellor?.name,
@@ -1547,10 +1818,27 @@ class DataService {
   public getWorkflows(includeInactive: boolean = false): WorkflowStage[] {
     return [...this.workflows]
       .filter((w) => {
-        if (!includeInactive && w.isActive === false) return false;
+        if (!includeInactive && (w.isActive === false || w.isLegacy === true)) return false;
         const name = (w.stageName || '').toLowerCase().trim();
         const id = (w.id || '').toLowerCase().trim();
         const formId = (w.formId || '').toLowerCase().trim();
+
+        // When requesting active clinical workflow, strictly exclude legacy old stages
+        if (!includeInactive && (
+          id === 'stage-initial' ||
+          id === 'stage-followup-1' ||
+          id === 'stage-followup-2' ||
+          id === 'stage-recovery' ||
+          id === 'stage-final' ||
+          name === 'initial assessment' ||
+          name === 'follow-up assessment 1' ||
+          name === 'follow-up assessment 2' ||
+          name === 'recovery progress assessment' ||
+          name === 'final assessment'
+        )) {
+          return false;
+        }
+
         return !(
           name === 'client registration / biodata' ||
           name === 'registration & biodata' ||
@@ -1739,7 +2027,7 @@ class DataService {
       clientEmail: client.email || auth.currentUser?.email || '',
       formId: form.id,
       formTitle: form.name,
-      stageId: client.currentStageId || 'stage-initial',
+      stageId: client.currentStageId || 'stage-assessment-1',
       answers: enrichedAnswers,
       section5Score: typeof data.section5Score === 'number' ? data.section5Score : null,
       gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : null,
@@ -1782,11 +2070,18 @@ class DataService {
       client.result = `Section 5 Score: ${data.section5Score ?? 'N/A'}/19, GPDS: ${data.gpdsScore ?? 'N/A'}/10. Risk: ${riskLevel || 'Standard'}`;
     }
 
-    // Determine the next stage in workflow
-    const currentWorkflowIndex = this.workflows.findIndex((w) => w.formId === form.id || w.id === client.currentStageId);
-    const nextStage = currentWorkflowIndex >= 0 && currentWorkflowIndex < this.workflows.length - 1
-      ? this.workflows[currentWorkflowIndex + 1]
-      : null;
+    // Determine the next stage in active clinical workflow
+    const activeStages = this.getWorkflows(false);
+    const currentWorkflowIndex = activeStages.findIndex(
+      (w) =>
+        w.formId === form.id ||
+        w.id === client.currentStageId ||
+        (form.id === 'form-recovery-1' && (w.id === 'stage-assessment-1' || w.id === 'stage-initial'))
+    );
+    const nextStage =
+      currentWorkflowIndex >= 0 && currentWorkflowIndex < activeStages.length - 1
+        ? activeStages[currentWorkflowIndex + 1]
+        : null;
 
     client.totalAssessmentsCompleted = (client.totalAssessmentsCompleted || 0) + 1;
     client.lastActivityDate = now;
@@ -1794,12 +2089,12 @@ class DataService {
       client.riskLevel = riskLevel === 'Severe' ? 'High' : riskLevel;
     }
 
-    let delayDays = typeof form.waitingDaysAfterCompletion === 'number' ? form.waitingDaysAfterCompletion : 7;
-
+    let delayDays = 0;
     if (nextStage) {
-      delayDays = typeof nextStage.delayDaysFromPrevious === 'number'
-        ? nextStage.delayDaysFromPrevious
-        : (typeof form.waitingDaysAfterCompletion === 'number' ? form.waitingDaysAfterCompletion : 7);
+      delayDays =
+        typeof nextStage.delayDaysFromPrevious === 'number'
+          ? nextStage.delayDaysFromPrevious
+          : (typeof form.waitingDaysAfterCompletion === 'number' ? form.waitingDaysAfterCompletion : 7);
       const nextDueDate = new Date();
       nextDueDate.setDate(nextDueDate.getDate() + delayDays);
 

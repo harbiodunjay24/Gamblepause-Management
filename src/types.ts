@@ -17,6 +17,7 @@ export interface StaffUser {
   phone?: string;
   assignedClientsCount: number;
   active: boolean;
+  status?: 'Active' | 'Inactive' | 'Archived' | 'Deactivated';
   authUid?: string;
 }
 
@@ -127,6 +128,14 @@ export interface FormDefinition {
   scoringRanges?: ScoringRange[];
 }
 
+export type AssessmentAccessMode = 'scheduled' | 'testing';
+
+export interface AppSettings {
+  assessmentAccessMode: AssessmentAccessMode;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export interface WorkflowStage {
   id: string;
   formId: string;
@@ -136,6 +145,7 @@ export interface WorkflowStage {
   isInitialRegistration?: boolean;
   description: string;
   isActive?: boolean;
+  isLegacy?: boolean;
 }
 
 export interface AssessmentAnswer {

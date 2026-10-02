@@ -93,7 +93,7 @@ export const SECTION_6_GPDS_QUESTIONS = [
 export const GAMBLEPAUSE_FORMS: FormDefinition[] = [
   {
     id: 'form-recovery-1',
-    name: 'GPA Assessment Recovery 1',
+    name: 'Assessment 1.0 — Clinical Intake & Diagnostic Screen',
     code: 'gpa_recovery_1',
     description: 'Initial assessment covering client gambling history, goals, Exercise 1.0, gambling budget calculations, Diagnostic Screen, and the GamblePause Diagnostic Screen (GPDS).',
     active: true,
@@ -193,13 +193,14 @@ export const GAMBLEPAUSE_FORMS: FormDefinition[] = [
 
 export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
   {
-    id: 'stage-initial',
+    id: 'stage-assessment-1',
     formId: 'form-recovery-1',
-    stageName: 'Initial Assessment',
+    stageName: 'Assessment 1.0',
     order: 1,
     delayDaysFromPrevious: 0, // Ready immediately upon biodata registration
     description: 'Baseline clinical assessment, gambling budget, Exercise 1.0, and diagnostic screening.',
     isInitialRegistration: false,
+    isActive: true,
   },
   {
     id: 'stage-assessment-2',
@@ -208,6 +209,7 @@ export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
     order: 2,
     delayDaysFromPrevious: 7, // Configurable from admin dashboard
     description: 'Dealing With Family Members & Consequences of Gambling.',
+    isActive: true,
   },
   {
     id: 'stage-assessment-3',
@@ -216,6 +218,7 @@ export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
     order: 3,
     delayDaysFromPrevious: 7,
     description: 'Developing Alternative Thoughts & Cognitive Restructuring.',
+    isActive: true,
   },
   {
     id: 'stage-assessment-4',
@@ -224,6 +227,7 @@ export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
     order: 4,
     delayDaysFromPrevious: 7,
     description: 'Recognizing and Dealing With Triggers (8 Techniques & Homework #5).',
+    isActive: true,
   },
   {
     id: 'stage-assessment-5',
@@ -232,14 +236,16 @@ export const GAMBLEPAUSE_WORKFLOW_STAGES: WorkflowStage[] = [
     order: 5,
     delayDaysFromPrevious: 7,
     description: 'Avoiding Avoidance, Rating Coping Strategies & New Activities.',
+    isActive: true,
   },
   {
     id: 'stage-feedback',
     formId: 'form-feedback',
-    stageName: 'Feedback Form',
+    stageName: 'Client Feedback',
     order: 6,
     delayDaysFromPrevious: 7,
     description: 'Quality of Psychological Support & Perceived Improvement Evaluation.',
+    isActive: true,
   },
 ];
 

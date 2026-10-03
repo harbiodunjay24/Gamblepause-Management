@@ -127,18 +127,55 @@ class DataService {
   }
 
   /**
-   * Unified authoritative sync for all Cloud Firestore collections
+   * Unified authoritative sync for Cloud Firestore collections based on authenticated role
    */
   public async syncAllFromFirestore(): Promise<void> {
-    await Promise.allSettled([
-      this.syncClientsFromFirestore(),
-      this.syncStaffFromFirestore(),
-      this.syncAssessmentResponsesFromFirestore(),
-      this.syncAssignmentsFromFirestore(),
+    const user = authService.getCurrentUser();
+
+    // 1. Public collections readable by everyone (forms, workflows, app settings)
+    const tasks: Promise<any>[] = [
       this.syncFormsAndWorkflowsFromFirestore(),
-      this.syncNotificationsFromFirestore(),
       this.syncSettingsFromFirestore(),
-    ]);
+    ];
+
+    if (!user) {
+      await Promise.allSettled(tasks);
+      return;
+    }
+
+    const isSuperAdminUser =
+      user.role === 'Super Admin' ||
+      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+        user.email?.toLowerCase() || ''
+      );
+
+    if (isSuperAdminUser) {
+      // Super Admin: full access to all collections
+      tasks.push(
+        this.syncClientsFromFirestore(),
+        this.syncStaffFromFirestore(),
+        this.syncAssessmentResponsesFromFirestore(),
+        this.syncAssignmentsFromFirestore(),
+        this.syncNotificationsFromFirestore()
+      );
+    } else if (user.role === 'Counsellor' || user.role === 'Staff' || user.role === 'Analyst / Viewer') {
+      // Staff / Counsellors: sync staff, assigned clients, responses, assignments, and notifications
+      tasks.push(
+        this.syncClientsFromFirestore(),
+        this.syncStaffFromFirestore(),
+        this.syncAssessmentResponsesFromFirestore(),
+        this.syncAssignmentsFromFirestore(),
+        this.syncNotificationsFromFirestore()
+      );
+    } else if (user.role === 'Client') {
+      // Client: ONLY sync their own client record and their own responses
+      tasks.push(
+        this.syncClientsFromFirestore(),
+        this.syncAssessmentResponsesFromFirestore()
+      );
+    }
+
+    await Promise.allSettled(tasks);
   }
 
   /**
@@ -422,6 +459,39 @@ class DataService {
       return;
     }
 
+    // Role-specific client retrieval
+    if (user.role === 'Client') {
+      const clientAuthUid = auth.currentUser?.uid || user.id;
+      if (clientAuthUid) {
+        await this.getClientByAuthUid(clientAuthUid);
+      }
+      return;
+    }
+
+    if (user.role === 'Counsellor') {
+      try {
+        const q = query(collection(db, 'clients'), where('assignedCounsellorId', '==', user.id));
+        const snap = await getDocs(q);
+        const firestoreClients: Client[] = [];
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as Client;
+          if (data && data.id) {
+            firestoreClients.push({
+              ...data,
+              isDemo: false,
+            });
+          }
+        });
+        if (firestoreClients.length > 0) {
+          this.mergeFirestoreClients(firestoreClients);
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Counsellor clients sync notice:', err?.message || err);
+      }
+      return;
+    }
+
+    // Super Admin: authoritative retrieval of all clients
     try {
       const clientsCol = collection(db, 'clients');
       let snap;
@@ -494,6 +564,18 @@ class DataService {
    */
   public async syncStaffFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
+    const user = authService.getCurrentUser();
+    const isStaffUser =
+      user &&
+      (user.role === 'Super Admin' ||
+        user.role === 'Counsellor' ||
+        user.role === 'Staff' ||
+        user.role === 'Analyst / Viewer' ||
+        ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+          user.email?.toLowerCase() || ''
+        ));
+    if (!isStaffUser) return;
+
     try {
       const snap = await getDocs(collection(db, 'staff'));
       const firestoreStaff: StaffUser[] = [];
@@ -532,6 +614,7 @@ class DataService {
                 name: u.name,
                 email: u.email,
                 role: u.role,
+                assignedClientsCount: 0,
                 active: u.active !== false && u.status !== 'Deactivated',
                 status: u.status || (u.active !== false ? 'Active' : 'Deactivated'),
               });
@@ -573,6 +656,54 @@ class DataService {
    */
   public async syncAssessmentResponsesFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
+    const user = authService.getCurrentUser();
+    if (!user) return;
+
+    if (user.role === 'Client') {
+      const clientAuthUid = auth.currentUser?.uid || user.id;
+      if (!clientAuthUid) return;
+      try {
+        const q = query(collection(db, 'assessmentResponses'), where('authUid', '==', clientAuthUid));
+        const snap = await getDocs(q);
+        const firestoreSubmissions: AssessmentSubmission[] = [];
+        snap.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data && data.clientId) {
+            firestoreSubmissions.push({
+              id: data.id || docSnap.id,
+              clientId: data.clientId,
+              clientName: data.clientName || 'Client',
+              formId: data.formId,
+              formName: data.formTitle || data.formName || 'Assessment',
+              stageId: data.stageId || 'stage-initial',
+              submittedAt: data.submittedAt || new Date().toISOString(),
+              answers: Array.isArray(data.answers) ? data.answers : [],
+              totalScore: typeof data.totalScore === 'number' ? data.totalScore : (typeof data.score === 'number' ? data.score : undefined),
+              section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
+              gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
+              scoreRiskLevel: data.scoreRiskLevel || data.severity || data.riskLevel,
+              status: data.status || 'Completed',
+              counsellorNotes: data.counsellorNotes,
+            });
+          }
+        });
+        if (firestoreSubmissions.length > 0) {
+          this.mergeFirestoreSubmissions(firestoreSubmissions);
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Client own assessmentResponses sync notice:', err?.message || err);
+      }
+      return;
+    }
+
+    const isPrivileged =
+      user.role === 'Super Admin' ||
+      user.role === 'Counsellor' ||
+      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+        user.email?.toLowerCase() || ''
+      );
+    if (!isPrivileged) return;
+
     try {
       const snap = await getDocs(collection(db, 'assessmentResponses'));
       const firestoreSubmissions: AssessmentSubmission[] = [];
@@ -626,6 +757,16 @@ class DataService {
    */
   public async syncAssignmentsFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
+    const user = authService.getCurrentUser();
+    const canRead =
+      user &&
+      (user.role === 'Super Admin' ||
+        user.role === 'Counsellor' ||
+        ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+          user.email?.toLowerCase() || ''
+        ));
+    if (!canRead) return;
+
     try {
       const snap = await getDocs(collection(db, 'counsellorAssignments'));
       const firestoreAssignments: CounsellorAssignmentHistory[] = [];
@@ -749,6 +890,16 @@ class DataService {
    */
   public async syncNotificationsFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
+    const user = authService.getCurrentUser();
+    const canRead =
+      user &&
+      (user.role === 'Super Admin' ||
+        user.role === 'Counsellor' ||
+        ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+          user.email?.toLowerCase() || ''
+        ));
+    if (!canRead) return;
+
     try {
       const snap = await getDocs(collection(db, 'notifications'));
       if (!snap.empty) {
@@ -1238,15 +1389,39 @@ class DataService {
     };
   }
 
-  public generateNextClientId(): string {
+  public async generateNextClientId(): Promise<string> {
+    // 1. Query server endpoint for synchronized sequence counter
+    try {
+      const res = await fetch('/api/clients/next-id');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.nextId) {
+          return data.nextId;
+        }
+      }
+    } catch {
+      // Backend not reachable, fall back to robust local calculation
+    }
+
+    // 2. Scan in-memory clients
     const existingNumbers = this.clients
       .map((c) => {
         const match = c.id.match(/^GP-(\d+)$/i);
         return match ? parseInt(match[1], 10) : 0;
       })
       .filter((n) => !isNaN(n));
-    const maxNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
+
+    // 3. Scan stored sequence in localStorage
+    const storedSeq = parseInt(localStorage.getItem('gp_last_client_seq') || '0', 10);
+    if (!isNaN(storedSeq) && storedSeq > 0) {
+      existingNumbers.push(storedSeq);
+    }
+
+    // Baseline floor is 15 based on production Firestore records (GP-0001 through GP-0015)
+    const maxNum = Math.max(15, ...existingNumbers);
     const nextNum = maxNum + 1;
+    localStorage.setItem('gp_last_client_seq', String(nextNum));
+
     return `GP-${String(nextNum).padStart(4, '0')}`;
   }
 
@@ -1295,12 +1470,14 @@ class DataService {
       existingClient = await this.getClientByAuthUid(biodata.authUid);
     }
 
-    const clientId = existingClient?.id || this.generateNextClientId();
+    const clientId = existingClient?.id || (await this.generateNextClientId());
     const secureKey = existingClient?.secureAccessKey || `sec_${clientId.toLowerCase().replace('-', '')}_${Math.random().toString(36).substring(2, 10)}`;
     const now = new Date().toISOString();
 
-    // Assign a counsellor evenly
-    const activeCounsellors = this.staff.filter((s) => s.role === 'Counsellor' || s.role === 'Super Admin');
+    // Assign a counsellor evenly among active Counsellors ONLY (Super Admin, Staff, Analyst, Viewer, and inactive users are strictly excluded)
+    const activeCounsellors = this.staff.filter(
+      (s) => s.role === 'Counsellor' && s.active !== false && s.status !== 'Deactivated' && s.status !== 'Archived'
+    );
     const assignedCounsellor = existingClient?.assignedCounsellorId
       ? this.staff.find((s) => s.id === existingClient?.assignedCounsellorId)
       : (activeCounsellors.length > 0 ? activeCounsellors[this.clients.length % activeCounsellors.length] : undefined);
@@ -1334,8 +1511,9 @@ class DataService {
     // Authoritative Cloud Firestore write: Await and verify BEFORE local storage persistence
     if (db && isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'clients', newClient.id), newClient, { merge: true });
-        console.log(`[Firestore] Client ${newClient.id} successfully written and verified in Firestore.`);
+        const cleanPayload = cleanForFirestore(newClient);
+        await setDoc(doc(db, 'clients', cleanPayload.id), cleanPayload, { merge: true });
+        console.log(`[Firestore] Client ${cleanPayload.id} successfully written and verified in Firestore.`);
       } catch (err: any) {
         console.error('[Firestore] Register client sync error:', err);
         const isPermDenied = err?.code === 'permission-denied' || err?.message?.includes('permission-denied');
@@ -2428,17 +2606,26 @@ class DataService {
         const userDocRef = doc(db, 'users', uid);
         const userDocSnap = await getDoc(userDocRef);
         const oldEmail = userDocSnap.exists() ? (userDocSnap.data()?.email || '') : '';
+        const staffRecord = this.staff.find((s) => s.authUid === uid || s.id === staffId || s.id === uid);
+
+        const userUpdateData: Record<string, any> = {
+          email: cleanEmail,
+          emailUpdatedAt: serverTimestamp(),
+          emailUpdatedBy: currentUser.id || currentUser.email,
+        };
+
+        if (!userDocSnap.exists()) {
+          userUpdateData.id = uid;
+          userUpdateData.authUid = uid;
+          userUpdateData.name = staffRecord?.name || 'Staff User';
+          userUpdateData.role = staffRecord?.role || 'Staff';
+          userUpdateData.active = staffRecord?.active !== false;
+          userUpdateData.status = staffRecord?.status || 'Active';
+          userUpdateData.createdAt = serverTimestamp();
+        }
 
         // 2. Targeted merge update on users/{uid} - NEVER replaces document or changes UID
-        await setDoc(
-          userDocRef,
-          {
-            email: cleanEmail,
-            emailUpdatedAt: serverTimestamp(),
-            emailUpdatedBy: currentUser.id || currentUser.email,
-          },
-          { merge: true }
-        );
+        await setDoc(userDocRef, userUpdateData, { merge: true });
 
         // 3. If a linked staff/{staffId} record exists, update its email as well
         if (staffId) {
@@ -2472,14 +2659,14 @@ class DataService {
           await setDoc(auditRef, {
             id: auditRef.id,
             action: 'email_changed',
-            targetType: 'User',
+            targetType: 'Staff',
             targetId: uid,
             targetUid: uid,
             oldEmail: oldEmail || null,
             newEmail: cleanEmail,
-            performedByUid: currentUser.authUid || currentUser.id,
+            performedByUid: currentUser.id,
             performedByEmail: currentUser.email,
-            actingSuperAdminUid: currentUser.authUid || currentUser.id,
+            actingSuperAdminUid: currentUser.id,
             actingSuperAdminEmail: currentUser.email,
             timestamp: new Date().toISOString(),
             createdAt: serverTimestamp(),
@@ -2503,7 +2690,7 @@ class DataService {
     this.saveToStorage();
     this.logAudit(
       'EMAIL_CHANGED',
-      'User',
+      'Staff',
       uid,
       `User email synchronized to ${cleanEmail} by ${currentUser.name || currentUser.email}`
     );
@@ -2573,12 +2760,12 @@ class DataService {
           await setDoc(auditRef, {
             id: auditRef.id,
             action: 'superadmin_registered',
-            targetType: 'User',
+            targetType: 'Staff',
             targetId: cleanUid,
             targetUid: cleanUid,
             name: 'Steven Benjamin',
             email: 'stevobenjo@gmail.com',
-            performedByUid: currentUser.authUid || currentUser.id,
+            performedByUid: currentUser.id,
             performedByEmail: currentUser.email,
             timestamp: new Date().toISOString(),
             createdAt: serverTimestamp(),
@@ -2604,7 +2791,7 @@ class DataService {
     this.saveToStorage();
     this.logAudit(
       'SUPERADMIN_REGISTERED',
-      'User',
+      'Staff',
       cleanUid,
       `Steven Benjamin registered as Super Admin by ${currentUser.name || currentUser.email}`
     );

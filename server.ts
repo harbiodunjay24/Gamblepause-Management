@@ -782,6 +782,20 @@ app.post('/api/auth/change-password', (req, res) => {
 });
 
 // Clients API
+app.get('/api/clients/next-id', (req, res) => {
+  const existingNumbers = (db.clients || [])
+    .map((c) => {
+      const match = c.id.match(/^GP-(\d+)$/i);
+      return match ? parseInt(match[1], 10) : 0;
+    })
+    .filter((n) => !isNaN(n));
+
+  const maxNum = Math.max(15, ...existingNumbers);
+  const nextNum = maxNum + 1;
+  const nextId = `GP-${String(nextNum).padStart(4, '0')}`;
+  return res.json({ success: true, nextId, nextNum });
+});
+
 app.get('/api/clients', (req, res) => {
   res.json(db.clients);
 });

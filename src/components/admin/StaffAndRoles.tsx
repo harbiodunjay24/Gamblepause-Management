@@ -46,6 +46,7 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
   // Email management modal state
   const [editingEmailUser, setEditingEmailUser] = useState<StaffUser | null>(null);
   const [newEmailInput, setNewEmailInput] = useState('');
+  const [customUidInput, setCustomUidInput] = useState('');
   const [confirmConsoleSync, setConfirmConsoleSync] = useState(false);
   const [isSyncingEmail, setIsSyncingEmail] = useState(false);
   const [emailSyncError, setEmailSyncError] = useState<string | null>(null);
@@ -56,6 +57,9 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
   const [stevenUidInput, setStevenUidInput] = useState('');
   const [isSyncingSteven, setIsSyncingSteven] = useState(false);
   const [stevenError, setStevenError] = useState<string | null>(null);
+
+  // Manual Firebase Console Guide state
+  const [showConsoleGuide, setShowConsoleGuide] = useState(false);
 
   // Password change state for Super Admin
   const [currentPwd, setCurrentPwd] = useState('');
@@ -192,6 +196,7 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
   const handleOpenChangeEmail = (member: StaffUser) => {
     setEditingEmailUser(member);
     setNewEmailInput('');
+    setCustomUidInput(member.authUid || (member.id && !member.id.startsWith('staff-') ? member.id : ''));
     setConfirmConsoleSync(false);
     setEmailSyncError(null);
     setSelfCurrentPassword('');
@@ -213,7 +218,16 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
       return;
     }
 
-    const isSelf = editingEmailUser.id === currentUser.id || editingEmailUser.authUid === currentUser.id;
+    const isSelf =
+      editingEmailUser.id === currentUser.id ||
+      (editingEmailUser.authUid && currentUser.authUid && editingEmailUser.authUid === currentUser.authUid) ||
+      editingEmailUser.email.toLowerCase() === currentUser.email.toLowerCase();
+
+    const targetUid = customUidInput.trim() || editingEmailUser.authUid || editingEmailUser.id;
+    if (!targetUid || targetUid.length < 5) {
+      setEmailSyncError('A valid Firebase Authentication UID is required to synchronize the Firestore profile.');
+      return;
+    }
 
     setIsSyncingEmail(true);
     try {
@@ -227,7 +241,6 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         }
 
         // Synchronize Firestore profile
-        const targetUid = editingEmailUser.authUid || editingEmailUser.id;
         await dataService.syncUserEmail({
           uid: targetUid,
           newEmail: cleanEmail,
@@ -248,7 +261,6 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
           return;
         }
 
-        const targetUid = editingEmailUser.authUid || editingEmailUser.id;
         const res = await dataService.syncUserEmail({
           uid: targetUid,
           newEmail: cleanEmail,
@@ -460,6 +472,33 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         </div>
       )}
 
+      {/* Pending Steven Benjamin Setup Banner for Super Admins */}
+      {currentUser.role === 'Super Admin' &&
+        !staff.some(
+          (s) => s.email?.toLowerCase() === 'stevobenjo@gmail.com' && s.authUid && s.authUid.length > 5
+        ) && (
+          <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-amber-900">
+              <ShieldCheck className="w-5 h-5 text-amber-600 shrink-0" />
+              <div>
+                <span className="font-bold">Super Admin Profile Pending Link:</span> Steven Benjamin (
+                <span className="font-mono text-[11px]">stevobenjo@gmail.com</span>) requires linking with his Firebase
+                Authentication UID.
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setStevenUidInput('');
+                setStevenError(null);
+                setShowStevenModal(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shrink-0 cursor-pointer shadow-xs transition-colors"
+            >
+              Complete UID Setup
+            </button>
+          </div>
+        )}
+
       {/* Staff Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {staff.map((member) => {
@@ -573,20 +612,43 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                     </div>
 
                     {currentUser.role === 'Super Admin' && (
-                      <button
-                        type="button"
-                        onClick={() => handleSendPasswordReset(member)}
-                        className="w-full py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        <KeyRound className="w-3 h-3 text-gray-400" />
-                        <span>Send Password Reset</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenChangeEmail(member)}
+                          className="flex-1 py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 hover:text-gray-950 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                          title="Change or synchronize this staff member's email address"
+                        >
+                          <Mail className="w-3.5 h-3.5 text-gray-500" />
+                          <span>Change Email</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSendPasswordReset(member)}
+                          className="flex-1 py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                        >
+                          <KeyRound className="w-3 h-3 text-gray-400" />
+                          <span>Reset Password</span>
+                        </button>
+                      </div>
                     )}
                   </>
                 ) : (
-                  <div className="text-center text-[11px] font-bold text-red-600 bg-red-50 py-2 rounded-xl border border-red-200 flex items-center justify-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Current Session Operator (You)</span>
+                  <div className="space-y-2">
+                    <div className="text-center text-[11px] font-bold text-red-600 bg-red-50 py-1.5 rounded-xl border border-red-200 flex items-center justify-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Current Session Operator (You)</span>
+                    </div>
+                    {currentUser.role === 'Super Admin' && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenChangeEmail(member)}
+                        className="w-full py-1.5 px-3 rounded-xl border border-red-200 bg-white hover:bg-red-50 text-red-700 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <Mail className="w-3.5 h-3.5 text-red-600" />
+                        <span>Change My Email</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -652,6 +714,91 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         </div>
       </div>
 
+      {/* Super Admin Manual & Firebase Console Procedures Help Section */}
+      <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gray-100 text-gray-700 flex items-center justify-center border border-gray-200">
+              <HelpCircle className="w-5 h-5 text-gray-600" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-gray-900">
+                Super Admin Manual: Firebase Console & User Management
+              </h2>
+              <p className="text-xs text-gray-500">
+                Standard operating procedures for managing staff accounts, credentials, and email synchronization.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowConsoleGuide(!showConsoleGuide)}
+            className="text-xs font-bold text-gray-700 hover:text-gray-950 px-3 py-1.5 rounded-xl border border-gray-200 hover:bg-gray-50 cursor-pointer"
+          >
+            {showConsoleGuide ? 'Hide Guide' : 'View Guide'}
+          </button>
+        </div>
+
+        {showConsoleGuide && (
+          <div className="space-y-4 text-xs text-gray-700 pt-3 border-t border-gray-100">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Procedure A: Changing another user's email */}
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 space-y-2">
+                <div className="font-bold text-gray-950 flex items-center gap-1.5 text-xs">
+                  <Mail className="w-4 h-4 text-red-600" />
+                  <span>Procedure 1: Changing Another User's Email</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-gray-600 text-[11px]">
+                  <li>Open the <strong>Firebase Console</strong> at <span className="font-mono text-gray-800">console.firebase.google.com</span>.</li>
+                  <li>Select project: <strong className="font-mono text-red-700">gamblepause-africa</strong>.</li>
+                  <li>Click on <strong>Authentication</strong> in the left sidebar, then select the <strong>Users</strong> tab.</li>
+                  <li>Locate the target staff member by current email or UID.</li>
+                  <li>Click the three vertical dots (actions) and choose <strong>Edit email address</strong>.</li>
+                  <li>Enter the new official email and click <strong>Save</strong>.</li>
+                  <li>Return to GamblePause, click <strong>Change Email</strong> on the staff card, enter the new email, and click <strong>Confirm & Synchronize Firestore Profile</strong>.</li>
+                </ol>
+                <div className="text-[10px] text-gray-500 italic pt-1 border-t border-gray-200">
+                  Guarantee: The permanent UID remains unchanged. Client records, assessments, case notes, and counsellor assignments are completely preserved.
+                </div>
+              </div>
+
+              {/* Procedure B: Provisioning Steven Benjamin */}
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 space-y-2">
+                <div className="font-bold text-gray-950 flex items-center gap-1.5 text-xs">
+                  <ShieldCheck className="w-4 h-4 text-red-600" />
+                  <span>Procedure 2: Setting Up Steven Benjamin</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-gray-600 text-[11px]">
+                  <li>Open Firebase Console → <strong className="font-mono text-red-700">gamblepause-africa</strong>.</li>
+                  <li>Go to <strong>Authentication</strong> → <strong>Users</strong>.</li>
+                  <li>If the account does not exist, click <strong>Add user</strong>, enter <span className="font-mono text-gray-800">stevobenjo@gmail.com</span> and set a temporary password.</li>
+                  <li>Copy the generated <strong>User UID</strong> for Steven Benjamin.</li>
+                  <li>In GamblePause, click <strong>Setup / Sync Steven Benjamin</strong> above.</li>
+                  <li>Paste Steven's Firebase UID and click <strong>Register / Synchronize Super Admin Profile</strong>.</li>
+                </ol>
+                <div className="text-[10px] text-gray-500 italic pt-1 border-t border-gray-200">
+                  Security note: The Firestore profile is created at <span className="font-mono">users/{'{uid}'}</span> with role <span className="font-semibold">Super Admin</span>. No passwords or secrets are stored in Firestore.
+                </div>
+              </div>
+            </div>
+
+            {/* Architecture & Non-disruption Guarantee */}
+            <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-xl space-y-1 text-emerald-950 text-[11px]">
+              <div className="font-bold text-emerald-900 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Architecture & Non-Disruption Guarantees</span>
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-emerald-900">
+                <li><strong>No Cloud Functions</strong> or paid backend infrastructure deployed.</li>
+                <li><strong>Firebase Blaze upgrade</strong> is NOT required.</li>
+                <li><strong>All assessment progression</strong> (Assessments 1.0 - 5.0 + Feedback) is 100% preserved.</li>
+                <li><strong>Existing client biodata</strong> and historical assessment responses are never altered.</li>
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Staff Profile Details Modal */}
       {viewingStaff && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -710,7 +857,21 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+            <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-gray-100">
+              {currentUser.role === 'Super Admin' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = viewingStaff;
+                    setViewingStaff(null);
+                    handleOpenChangeEmail(target);
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-bold border border-gray-200 hover:bg-gray-50 text-gray-800 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Mail className="w-3.5 h-3.5 text-gray-600" />
+                  <span>Change Email</span>
+                </button>
+              )}
               {currentUser.role === 'Super Admin' && viewingStaff.id !== currentUser.id && (
                 <>
                   <button
@@ -851,6 +1012,333 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                   className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
                 >
                   {isAddingStaff ? 'Creating...' : 'Create Staff Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Email Management & Synchronization Modal */}
+      {editingEmailUser && (() => {
+        const isSelf =
+          editingEmailUser.id === currentUser.id ||
+          (editingEmailUser.authUid && currentUser.authUid && editingEmailUser.authUid === currentUser.authUid) ||
+          editingEmailUser.email.toLowerCase() === currentUser.email.toLowerCase();
+        const targetUid = customUidInput.trim() || editingEmailUser.authUid || editingEmailUser.id;
+        const isTargetActive = editingEmailUser.active !== false;
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-lg w-full space-y-4 my-8">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-red-50 text-red-600 flex items-center justify-center border border-red-200">
+                    <Mail className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-gray-950">
+                      {isSelf ? 'Update Your Email Address' : 'Manage User Email & Profile Synchronization'}
+                    </h3>
+                    <p className="text-[11px] text-gray-500">
+                      {isSelf ? 'Client-side Firebase Authentication update' : 'Safe manual update & Firestore profile sync'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setEditingEmailUser(null)}
+                  className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer p-1"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Target User Details Card */}
+              <div className="bg-gray-50 rounded-xl p-3.5 border border-gray-200 space-y-2 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-semibold">User:</span>
+                  <span className="font-bold text-gray-900">{editingEmailUser.name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-semibold">Designated Role:</span>
+                  <span className="font-bold text-gray-900">{editingEmailUser.role}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-semibold">Account Status:</span>
+                  <span
+                    className={`font-bold px-2 py-0.5 rounded text-[10px] ${
+                      isTargetActive ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-200 text-gray-700'
+                    }`}
+                  >
+                    {isTargetActive ? 'Active' : 'Deactivated'} (Status preserved)
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 font-semibold">Current Email:</span>
+                  <span className="font-mono font-bold text-gray-900">{editingEmailUser.email}</span>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t border-gray-200/60">
+                  <span className="text-gray-500 font-semibold">Permanent Firebase UID:</span>
+                  <span className="font-mono text-[11px] text-gray-700 font-bold bg-white px-2 py-0.5 rounded border border-gray-200">
+                    {targetUid}
+                  </span>
+                </div>
+                <div className="text-[10px] text-gray-500 italic">
+                  Note: The Firebase UID is permanent and will NEVER change. Changing email updates only the email attribute.
+                </div>
+              </div>
+
+              {emailSyncError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                  <span>{emailSyncError}</span>
+                </div>
+              )}
+
+              {/* Modal Body: Self vs Other */}
+              {isSelf ? (
+                /* Self Email Change Flow */
+                <form onSubmit={handleSyncUserEmail} className="space-y-3.5 text-xs">
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 space-y-1">
+                    <div className="font-bold flex items-center gap-1.5 text-xs text-blue-950">
+                      <ShieldCheck className="w-4 h-4 text-blue-600" />
+                      <span>Authenticated Session Operator</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed">
+                      You are updating your own authenticated email address. Firebase Authentication will verify or update your credentials directly.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-gray-800 mb-1">
+                      New Email Address <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="employee@gamblepause.org"
+                      value={newEmailInput}
+                      onChange={(e) => setNewEmailInput(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-gray-800 mb-1">
+                      Current Password (for Re-authentication)
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="Enter current password if prompted"
+                      value={selfCurrentPassword}
+                      onChange={(e) => setSelfCurrentPassword(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 text-xs"
+                    />
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      Sensitive security operations in Firebase Authentication require recent login or password confirmation.
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setEditingEmailUser(null)}
+                      className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSyncingEmail}
+                      className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSyncingEmail ? 'Updating...' : 'Update Authentication & Profile Email'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                /* Another User Email Change Flow */
+                <form onSubmit={handleSyncUserEmail} className="space-y-3.5 text-xs">
+                  {/* Step-by-step instructions for Firebase Console */}
+                  <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2 text-amber-950">
+                    <div className="font-bold flex items-center gap-1.5 text-xs text-amber-900">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Manual Firebase Console Requirement (No Cloud Functions)</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-900">
+                      GamblePause uses a secure client-side architecture without deployed Cloud Functions or service account credentials. Therefore, a user’s Firebase Authentication email must be changed manually in Firebase Console first, then synchronized to Firestore.
+                    </p>
+                    <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200 text-[11px] space-y-1 text-gray-800">
+                      <div className="font-bold text-gray-900">Follow these exact steps:</div>
+                      <ol className="list-decimal list-inside space-y-0.5 text-gray-700">
+                        <li>Open Firebase Console (<span className="font-mono text-xs text-red-700">gamblepause-africa</span>).</li>
+                        <li>Navigate to <span className="font-semibold">Authentication</span> → <span className="font-semibold">Users</span>.</li>
+                        <li>Locate <span className="font-semibold">{editingEmailUser.name}</span> by email (<span className="font-mono text-[11px]">{editingEmailUser.email}</span>) or UID (<span className="font-mono text-[10px]">{targetUid}</span>).</li>
+                        <li>Click <span className="font-semibold">Edit email address</span>, enter the new email, and click <span className="font-semibold">Save</span>.</li>
+                        <li className="text-red-700 font-semibold">Do NOT delete the user. Do NOT create a new user. The UID remains unchanged.</li>
+                        <li>Return here, enter the new email below, check confirmation, and synchronize.</li>
+                      </ol>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-gray-800 mb-1">
+                      New Email Address <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. employee@gamblepause.org"
+                      value={newEmailInput}
+                      onChange={(e) => setNewEmailInput(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-gray-800 mb-1">
+                      Firebase Authentication UID (from Console)
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Ba9N30y4cHVF79Ee78LMZFc8kAB2"
+                      value={customUidInput}
+                      onChange={(e) => setCustomUidInput(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-mono"
+                    />
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      Identifies the target Firestore document at <span className="font-mono">users/{'{uid}'}</span>. Never modifies client records or assessment history.
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+                    <label className="flex items-start gap-2 text-xs font-semibold text-gray-800 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={confirmConsoleSync}
+                        onChange={(e) => setConfirmConsoleSync(e.target.checked)}
+                        className="mt-0.5 rounded border-gray-300 text-red-600 focus:ring-red-500 cursor-pointer"
+                      />
+                      <span>
+                        I confirm that I have updated this user's email address in the Firebase Console (gamblepause-africa) and verified that their permanent Firebase UID is unchanged.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setEditingEmailUser(null)}
+                      className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSyncingEmail || !confirmConsoleSync}
+                      className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSyncingEmail ? 'Synchronizing...' : 'Confirm & Synchronize Firestore Profile'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Steven Benjamin Setup / Synchronize Modal */}
+      {showStevenModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-lg w-full space-y-4 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-red-50 text-red-600 flex items-center justify-center border border-red-200">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-950">
+                    Setup / Synchronize Steven Benjamin (Super Admin)
+                  </h3>
+                  <p className="text-[11px] text-gray-500">
+                    Authoritative profile linkage with Firebase Authentication UID
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowStevenModal(false)}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {stevenError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{stevenError}</span>
+              </div>
+            )}
+
+            <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-2 text-xs text-gray-800">
+              <div className="font-bold text-gray-900">Account Specifications:</div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div>Name: <strong>Steven Benjamin</strong></div>
+                <div>Role: <strong>Super Admin</strong></div>
+                <div>Email: <strong className="font-mono">stevobenjo@gmail.com</strong></div>
+                <div>Target Doc: <strong className="font-mono">users/{'{FirebaseUID}'}</strong></div>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs space-y-1.5 text-amber-950">
+              <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                <Info className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Firebase Console Procedure (Requirement 22):</span>
+              </div>
+              <ol className="list-decimal list-inside text-[11px] space-y-0.5 text-gray-700">
+                <li>Open Firebase Console (<span className="font-mono text-red-700">gamblepause-africa</span>).</li>
+                <li>Go to <span className="font-semibold">Authentication</span> → <span className="font-semibold">Users</span>.</li>
+                <li>If not created, click <span className="font-semibold">Add user</span> with email <span className="font-mono font-semibold">stevobenjo@gmail.com</span> and a temporary password.</li>
+                <li>Copy the generated <span className="font-semibold">User UID</span> for Steven Benjamin.</li>
+                <li>Paste the UID below and click Register / Synchronize.</li>
+              </ol>
+            </div>
+
+            <form onSubmit={handleSyncStevenBenjamin} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block font-bold text-gray-800 mb-1">
+                  Firebase Authentication UID <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Paste Firebase Auth UID (e.g. 5xX8jK9...)"
+                  value={stevenUidInput}
+                  onChange={(e) => setStevenUidInput(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 font-mono text-xs"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  The document ID in <span className="font-mono">users</span> will match this exact UID. No fake credentials or passwords are created.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setShowStevenModal(false)}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSyncingSteven || !stevenUidInput.trim()}
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSyncingSteven ? 'Registering...' : 'Register / Synchronize Super Admin Profile'}
                 </button>
               </div>
             </form>

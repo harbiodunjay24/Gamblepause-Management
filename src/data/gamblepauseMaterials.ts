@@ -4,6 +4,8 @@ export const SUPER_ADMIN_NAME = 'Abiodun Ayodeji';
 export const SUPER_ADMIN_EMAIL = 'ayodejiharbiodun24@gmail.com';
 export const SUPER_ADMIN_2_NAME = 'Ladipo Abiose';
 export const SUPER_ADMIN_2_EMAIL = 'ladipo.abiose@gamblepause.org';
+export const SUPER_ADMIN_3_NAME = 'Steven Benjamin';
+export const SUPER_ADMIN_3_EMAIL = 'stevobenjo@gmail.com';
 
 export const INITIAL_STAFF: StaffUser[] = [
   {
@@ -21,6 +23,15 @@ export const INITIAL_STAFF: StaffUser[] = [
     email: SUPER_ADMIN_2_EMAIL,
     role: 'Super Admin',
     phone: '+234 802 987 6543',
+    assignedClientsCount: 0,
+    active: true,
+  },
+  {
+    id: 'staff-steven',
+    name: SUPER_ADMIN_3_NAME,
+    email: SUPER_ADMIN_3_EMAIL,
+    role: 'Super Admin',
+    phone: '+234 800 000 0000',
     assignedClientsCount: 0,
     active: true,
   },

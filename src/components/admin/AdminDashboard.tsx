@@ -78,26 +78,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [rawClients, currentUser, selectedStatus, selectedCounsellor, selectedState, selectedGender, dateRange]);
 
-  if (!isLoaded) {
-    return (
-      <div className="space-y-6">
-        <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
-          <div className="text-center space-y-3">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
-            <p className="text-sm font-bold text-gray-800">Synchronizing with Cloud Firestore...</p>
-            <p className="text-xs text-gray-400">Loading authoritative client records and assessment trajectories</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const handleTriggerAutomatedCheck = async () => {
-    const res = await NotificationService.runAutomatedChecks();
-    setScanResult(`Check complete: ${res.overdueCount} newly flagged as overdue, ${res.remindersSent} automated notifications processed.`);
-    setTimeout(() => setScanResult(null), 5000);
-  };
-
   // Funnel calculations
   const stageCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -127,6 +107,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       .filter((c) => c.status === 'Overdue' || c.status === 'Assessment Due' || c.riskLevel === 'High')
       .slice(0, 5);
   }, [rawClients]);
+
+  const handleTriggerAutomatedCheck = async () => {
+    const res = await NotificationService.runAutomatedChecks();
+    setScanResult(`Check complete: ${res.overdueCount} newly flagged as overdue, ${res.remindersSent} automated notifications processed.`);
+    setTimeout(() => setScanResult(null), 5000);
+  };
+
+  if (!isLoaded) {
+    return (
+      <div className="space-y-6">
+        <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
+          <div className="text-center space-y-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+            <p className="text-sm font-bold text-gray-800">Synchronizing with Cloud Firestore...</p>
+            <p className="text-xs text-gray-400">Loading authoritative client records and assessment trajectories</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

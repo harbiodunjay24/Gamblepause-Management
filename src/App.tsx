@@ -18,6 +18,7 @@ import { NotificationCenter } from './components/admin/NotificationCenter';
 import { StaffAndRoles } from './components/admin/StaffAndRoles';
 import { CounsellorManagement } from './components/admin/CounsellorManagement';
 import { AnalyticsExport } from './components/admin/AnalyticsExport';
+import { HistoricalClientMigration } from './components/admin/HistoricalClientMigration';
 import { dataService } from './services/dataService';
 import { authService, AuthUser } from './services/authService';
 import { auth } from './lib/firebase';
@@ -37,6 +38,8 @@ import {
   ShieldAlert,
   ArrowLeft,
   Lock,
+  Database,
+  AlertTriangle,
 } from 'lucide-react';
 
 type AppRoute =
@@ -401,6 +404,10 @@ export default function App() {
     }
 
     // Render Authorized Admin Console
+    const isMigrationAuthorized =
+      (currentUser?.email || '').toLowerCase().trim() === 'ayodejiharbiodun24@gmail.com' &&
+      currentUser?.role === 'Super Admin';
+
     return (
       <div className="min-h-screen bg-gray-50/80 text-gray-900 font-sans flex flex-col selection:bg-red-600 selection:text-white">
         <Header
@@ -439,6 +446,9 @@ export default function App() {
                   { id: 'notifications', label: 'Reminder Engine', icon: Bell },
                   { id: 'roles', label: 'Staff & Security Roles', icon: ShieldCheck },
                   { id: 'reports', label: 'Reports & CSV Export', icon: Download },
+                  ...(isMigrationAuthorized
+                    ? [{ id: 'migration', label: 'Historical Migration', icon: Database }]
+                    : []),
                 ].map((tab) => {
                   const Icon = tab.icon;
                   const isActive = adminTab === tab.id;
@@ -500,6 +510,26 @@ export default function App() {
 
               {adminTab === 'reports' && (
                 <AnalyticsExport currentUser={staffUser} />
+              )}
+
+              {adminTab === 'migration' && (
+                isMigrationAuthorized ? (
+                  <HistoricalClientMigration
+                    currentUser={staffUser}
+                    onNavigateTab={(tab) => setAdminTab(tab)}
+                    onSelectClient={(c) => setSelectedClientForProfile(c)}
+                  />
+                ) : (
+                  <div className="bg-white rounded-3xl p-8 sm:p-12 border border-red-200 shadow-sm text-center max-w-xl mx-auto my-12 space-y-4">
+                    <div className="w-16 h-16 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto shadow-sm">
+                      <AlertTriangle className="w-8 h-8" />
+                    </div>
+                    <h2 className="text-xl font-black text-gray-950 tracking-tight">Access Denied</h2>
+                    <p className="text-sm text-gray-600 font-medium leading-relaxed">
+                      Access Denied — Historical Client Migration is restricted to the authorized migration administrator.
+                    </p>
+                  </div>
+                )
               )}
             </div>
           )}

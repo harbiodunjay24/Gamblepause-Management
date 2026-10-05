@@ -39,6 +39,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedClientId, setCopiedClientId] = useState<string | null>(null);
+  const [isLoadingCaseload, setIsLoadingCaseload] = useState(!dataService.isAuthoritativeLoaded());
 
   // Case note draft
   const [newNoteContent, setNewNoteContent] = useState('');
@@ -61,8 +62,23 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
 
   useEffect(() => {
     loadData();
-    const unsub = dataService.subscribe(loadData);
-    return unsub;
+    let isMounted = true;
+    dataService.ensureAuthoritativeData().finally(() => {
+      if (isMounted) {
+        loadData();
+        setIsLoadingCaseload(false);
+      }
+    });
+    const unsub = dataService.subscribe(() => {
+      if (isMounted) {
+        loadData();
+        setIsLoadingCaseload(false);
+      }
+    });
+    return () => {
+      isMounted = false;
+      unsub();
+    };
   }, [user.id, user.name]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
@@ -302,7 +318,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        {!dataService.isAuthoritativeLoaded() && clients.length === 0 ? (
+        {isLoadingCaseload && !dataService.isAuthoritativeLoaded() && clients.length === 0 ? (
           <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
             <div className="text-center space-y-3">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>

@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import sendCounsellorEmailHandler from './api/notifications/send-counsellor-email';
 
 const app = express();
 const PORT = 3000;
@@ -1139,6 +1140,11 @@ app.patch('/api/notifications/:id/read', (req, res) => {
     broadcastEvent('NOTIFICATION_READ', { id: notif.id });
   }
   res.json({ success: true });
+});
+
+// Counsellor Email Notification Dispatch Endpoint (Vercel-compatible)
+app.all('/api/notifications/send-counsellor-email', (req, res) => {
+  return sendCounsellorEmailHandler(req, res);
 });
 
 // ---------------------------------------------------------

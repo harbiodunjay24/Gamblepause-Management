@@ -470,23 +470,69 @@ class DataService {
 
     if (user.role === 'Counsellor') {
       try {
-        const q = query(collection(db, 'clients'), where('assignedCounsellorId', '==', user.id));
-        const snap = await getDocs(q);
-        const firestoreClients: Client[] = [];
-        snap.forEach((docSnap) => {
-          const data = docSnap.data() as Client;
-          if (data && data.id) {
-            firestoreClients.push({
-              ...data,
-              isDemo: false,
-            });
-          }
-        });
-        if (firestoreClients.length > 0) {
-          this.mergeFirestoreClients(firestoreClients);
+        const firestoreClientsMap = new Map<string, Client>();
+        const userEmail = (user.email || '').toLowerCase().trim();
+        const staffMember = this.staff.find(
+          (s) => s.authUid === user.id || s.id === user.id || (userEmail && s.email?.toLowerCase() === userEmail)
+        );
+        const staffId = staffMember?.id;
+        const counsellorName = user.name || staffMember?.name;
+
+        // Query 1: by assignedCounsellorId == user.id (Auth UID)
+        try {
+          const qId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', user.id));
+          const snapId = await getDocs(qId);
+          snapId.forEach((docSnap) => {
+            const data = docSnap.data() as Client;
+            if (data && data.id) {
+              firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+            }
+          });
+        } catch (e: any) {
+          console.warn('[DataService] Counsellor query by assignedCounsellorId notice:', e?.message || e);
         }
+
+        // Query 2: by assignedCounsellorName == counsellorName
+        // Authorized by firestore.rules: resource.data.assignedCounsellorName == getUserData().name
+        if (counsellorName) {
+          try {
+            const qName = query(collection(db, 'clients'), where('assignedCounsellorName', '==', counsellorName));
+            const snapName = await getDocs(qName);
+            snapName.forEach((docSnap) => {
+              const data = docSnap.data() as Client;
+              if (data && data.id) {
+                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+              }
+            });
+          } catch (e: any) {
+            console.warn('[DataService] Counsellor query by assignedCounsellorName notice:', e?.message || e);
+          }
+        }
+
+        // Query 3: by assignedCounsellorId == staffId (e.g. counsellor-benjamin) if distinct from user.id
+        if (staffId && staffId !== user.id) {
+          try {
+            const qStaffId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', staffId));
+            const snapStaffId = await getDocs(qStaffId);
+            snapStaffId.forEach((docSnap) => {
+              const data = docSnap.data() as Client;
+              if (data && data.id) {
+                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+              }
+            });
+          } catch {
+            // Safely ignored if security rules enforce Auth UID
+          }
+        }
+
+        const firestoreClients = Array.from(firestoreClientsMap.values());
+        this.mergeFirestoreClients(firestoreClients);
       } catch (err: any) {
         console.warn('[DataService] Counsellor clients sync notice:', err?.message || err);
+      } finally {
+        this.authoritativeLoaded = true;
+        this.saveToStorage();
+        this.notify();
       }
       return;
     }
@@ -591,38 +637,40 @@ class DataService {
         }
       });
 
-      // Also reconcile users collection documents for Super Admin and Staff
-      try {
-        const usersSnap = await getDocs(collection(db, 'users'));
-        usersSnap.forEach((docSnap) => {
-          const u = docSnap.data();
-          if (u && u.role && u.role !== 'Client') {
-            const existing = firestoreStaff.find(
-              (s) => s.authUid === docSnap.id || (u.email && s.email?.toLowerCase() === u.email?.toLowerCase())
-            );
-            if (existing) {
-              existing.authUid = docSnap.id;
-              if (u.name) existing.name = u.name;
-              if (u.email) existing.email = u.email;
-              if (u.role) existing.role = u.role;
-              if (u.status) existing.status = u.status;
-              if (u.active !== undefined) existing.active = u.active !== false && u.status !== 'Deactivated';
-            } else if (u.name && u.email) {
-              firestoreStaff.push({
-                id: `user-${docSnap.id.substring(0, 10)}`,
-                authUid: docSnap.id,
-                name: u.name,
-                email: u.email,
-                role: u.role,
-                assignedClientsCount: 0,
-                active: u.active !== false && u.status !== 'Deactivated',
-                status: u.status || (u.active !== false ? 'Active' : 'Deactivated'),
-              });
+      // Reconcile users collection documents only for Super Admin
+      if (user.role === 'Super Admin') {
+        try {
+          const usersSnap = await getDocs(collection(db, 'users'));
+          usersSnap.forEach((docSnap) => {
+            const u = docSnap.data();
+            if (u && u.role && u.role !== 'Client') {
+              const existing = firestoreStaff.find(
+                (s) => s.authUid === docSnap.id || (u.email && s.email?.toLowerCase() === u.email?.toLowerCase())
+              );
+              if (existing) {
+                existing.authUid = docSnap.id;
+                if (u.name) existing.name = u.name;
+                if (u.email) existing.email = u.email;
+                if (u.role) existing.role = u.role;
+                if (u.status) existing.status = u.status;
+                if (u.active !== undefined) existing.active = u.active !== false && u.status !== 'Deactivated';
+              } else if (u.name && u.email) {
+                firestoreStaff.push({
+                  id: `user-${docSnap.id.substring(0, 10)}`,
+                  authUid: docSnap.id,
+                  name: u.name,
+                  email: u.email,
+                  role: u.role,
+                  assignedClientsCount: 0,
+                  active: u.active !== false && u.status !== 'Deactivated',
+                  status: u.status || (u.active !== false ? 'Active' : 'Deactivated'),
+                });
+              }
             }
-          }
-        });
-      } catch (uErr) {
-        console.warn('[DataService] Firestore users sync notice:', uErr);
+          });
+        } catch (uErr) {
+          console.warn('[DataService] Firestore users sync notice:', uErr);
+        }
       }
 
       if (firestoreStaff.length > 0) {
@@ -696,13 +744,59 @@ class DataService {
       return;
     }
 
-    const isPrivileged =
+    if (user.role === 'Counsellor') {
+      // Counsellor: ONLY query assessmentResponses for their assigned clients
+      // Strictly respects firestore.rules and prevents PERMISSION_DENIED
+      try {
+        const assignedClients = this.getClients();
+        const firestoreSubmissions: AssessmentSubmission[] = [];
+
+        for (const client of assignedClients) {
+          if (!client.id) continue;
+          try {
+            const q = query(collection(db, 'assessmentResponses'), where('clientId', '==', client.id));
+            const snap = await getDocs(q);
+            snap.forEach((docSnap) => {
+              const data = docSnap.data();
+              if (data && data.clientId) {
+                firestoreSubmissions.push({
+                  id: data.id || docSnap.id,
+                  clientId: data.clientId,
+                  clientName: data.clientName || client.fullName || `${client.firstName} ${client.lastName}` || 'Client',
+                  formId: data.formId,
+                  formName: data.formTitle || data.formName || 'Assessment',
+                  stageId: data.stageId || 'stage-initial',
+                  submittedAt: data.submittedAt || new Date().toISOString(),
+                  answers: Array.isArray(data.answers) ? data.answers : [],
+                  totalScore: typeof data.totalScore === 'number' ? data.totalScore : (typeof data.score === 'number' ? data.score : undefined),
+                  section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
+                  gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
+                  scoreRiskLevel: data.scoreRiskLevel || data.severity || data.riskLevel,
+                  status: data.status || 'Completed',
+                  counsellorNotes: data.counsellorNotes,
+                });
+              }
+            });
+          } catch (cErr: any) {
+            console.warn(`[DataService] Counsellor client ${client.id} responses sync notice:`, cErr?.message || cErr);
+          }
+        }
+
+        if (firestoreSubmissions.length > 0) {
+          this.mergeFirestoreSubmissions(firestoreSubmissions);
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Counsellor assessmentResponses sync notice:', err?.message || err);
+      }
+      return;
+    }
+
+    const isSuperAdminUser =
       user.role === 'Super Admin' ||
-      user.role === 'Counsellor' ||
       ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
         user.email?.toLowerCase() || ''
       );
-    if (!isPrivileged) return;
+    if (!isSuperAdminUser) return;
 
     try {
       const snap = await getDocs(collection(db, 'assessmentResponses'));
@@ -758,14 +852,64 @@ class DataService {
   public async syncAssignmentsFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
     const user = authService.getCurrentUser();
-    const canRead =
-      user &&
-      (user.role === 'Super Admin' ||
-        user.role === 'Counsellor' ||
-        ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
-          user.email?.toLowerCase() || ''
-        ));
-    if (!canRead) return;
+    if (!user) return;
+
+    if (user.role === 'Counsellor') {
+      try {
+        const asgnsMap = new Map<string, CounsellorAssignmentHistory>();
+        const userEmail = (user.email || '').toLowerCase().trim();
+        const staffMember = this.staff.find(
+          (s) => s.authUid === user.id || s.id === user.id || (userEmail && s.email?.toLowerCase() === userEmail)
+        );
+        const staffId = staffMember?.id;
+
+        try {
+          const qId = query(collection(db, 'counsellorAssignments'), where('newCounsellorId', '==', user.id));
+          const snapId = await getDocs(qId);
+          snapId.forEach((docSnap) => {
+            const data = docSnap.data() as CounsellorAssignmentHistory;
+            if (data && data.clientId) asgnsMap.set(data.id || docSnap.id, { ...data, id: data.id || docSnap.id });
+          });
+        } catch (e: any) {
+          console.warn('[DataService] Counsellor assignments by user.id notice:', e?.message || e);
+        }
+
+        if (staffId && staffId !== user.id) {
+          try {
+            const qStaff = query(collection(db, 'counsellorAssignments'), where('newCounsellorId', '==', staffId));
+            const snapStaff = await getDocs(qStaff);
+            snapStaff.forEach((docSnap) => {
+              const data = docSnap.data() as CounsellorAssignmentHistory;
+              if (data && data.clientId) asgnsMap.set(data.id || docSnap.id, { ...data, id: data.id || docSnap.id });
+            });
+          } catch {
+            // Safely ignored if rule strictly checks auth.uid
+          }
+        }
+
+        const firestoreAssignments = Array.from(asgnsMap.values());
+        if (firestoreAssignments.length > 0) {
+          const asgnMap = new Map<string, CounsellorAssignmentHistory>();
+          for (const a of this.counsellorAssignments) asgnMap.set(a.id, a);
+          for (const fa of firestoreAssignments) asgnMap.set(fa.id, fa);
+          this.counsellorAssignments = Array.from(asgnMap.values()).sort(
+            (a, b) => new Date(b.changedAt).getTime() - new Date(a.changedAt).getTime()
+          );
+          this.saveToStorage();
+          this.notify();
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Counsellor assignments sync notice:', err?.message || err);
+      }
+      return;
+    }
+
+    const isSuperAdminUser =
+      user.role === 'Super Admin' ||
+      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+        user.email?.toLowerCase() || ''
+      );
+    if (!isSuperAdminUser) return;
 
     try {
       const snap = await getDocs(collection(db, 'counsellorAssignments'));
@@ -891,14 +1035,81 @@ class DataService {
   public async syncNotificationsFromFirestore(): Promise<void> {
     if (!db || !isFirebaseConfigured) return;
     const user = authService.getCurrentUser();
-    const canRead =
-      user &&
-      (user.role === 'Super Admin' ||
-        user.role === 'Counsellor' ||
-        ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
-          user.email?.toLowerCase() || ''
-        ));
-    if (!canRead) return;
+    if (!user) return;
+
+    if (user.role === 'Counsellor') {
+      try {
+        const notifsMap = new Map<string, NotificationLog>();
+        const userEmail = (user.email || '').toLowerCase().trim();
+        const staffMember = this.staff.find(
+          (s) => s.authUid === user.id || s.id === user.id || (userEmail && s.email?.toLowerCase() === userEmail)
+        );
+        const counsellorName = user.name || staffMember?.name;
+        const staffId = staffMember?.id;
+
+        // Query 1: by counsellorId == user.id
+        try {
+          const qId = query(collection(db, 'notifications'), where('counsellorId', '==', user.id));
+          const snapId = await getDocs(qId);
+          snapId.forEach((docSnap) => {
+            const data = docSnap.data() as NotificationLog;
+            if (data && data.messageBody) notifsMap.set(data.id || docSnap.id, { ...data, id: data.id || docSnap.id });
+          });
+        } catch (e: any) {
+          console.warn('[DataService] Counsellor notifications by counsellorId notice:', e?.message || e);
+        }
+
+        // Query 2: by counsellorName == counsellorName
+        if (counsellorName) {
+          try {
+            const qName = query(collection(db, 'notifications'), where('counsellorName', '==', counsellorName));
+            const snapName = await getDocs(qName);
+            snapName.forEach((docSnap) => {
+              const data = docSnap.data() as NotificationLog;
+              if (data && data.messageBody) notifsMap.set(data.id || docSnap.id, { ...data, id: data.id || docSnap.id });
+            });
+          } catch (e: any) {
+            console.warn('[DataService] Counsellor notifications by counsellorName notice:', e?.message || e);
+          }
+        }
+
+        // Query 3: by staffId if distinct
+        if (staffId && staffId !== user.id) {
+          try {
+            const qStaff = query(collection(db, 'notifications'), where('counsellorId', '==', staffId));
+            const snapStaff = await getDocs(qStaff);
+            snapStaff.forEach((docSnap) => {
+              const data = docSnap.data() as NotificationLog;
+              if (data && data.messageBody) notifsMap.set(data.id || docSnap.id, { ...data, id: data.id || docSnap.id });
+            });
+          } catch {
+            // Safely ignored
+          }
+        }
+
+        const firestoreNotifs = Array.from(notifsMap.values());
+        if (firestoreNotifs.length > 0) {
+          const nMap = new Map<string, NotificationLog>();
+          for (const n of this.notifications) nMap.set(n.id, n);
+          for (const fn of firestoreNotifs) nMap.set(fn.id, fn);
+          this.notifications = Array.from(nMap.values()).sort(
+            (a, b) => new Date(b.scheduledFor || b.sentAt || 0).getTime() - new Date(a.scheduledFor || a.sentAt || 0).getTime()
+          );
+          this.saveToStorage();
+          this.notify();
+        }
+      } catch (err: any) {
+        console.warn('[DataService] Counsellor notifications sync notice:', err?.message || err);
+      }
+      return;
+    }
+
+    const isSuperAdminUser =
+      user.role === 'Super Admin' ||
+      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+        user.email?.toLowerCase() || ''
+      );
+    if (!isSuperAdminUser) return;
 
     try {
       const snap = await getDocs(collection(db, 'notifications'));
@@ -1251,12 +1462,26 @@ class DataService {
 
     if (user.role === 'Counsellor') {
       // Counsellor sees ONLY clients assigned to them
-      return this.clients.filter(
-        (c) =>
-          c.assignedCounsellorId === user.id ||
-          (c.assignedCounsellorName && user.name && c.assignedCounsellorName.toLowerCase() === user.name.toLowerCase()) ||
-          (c.assignedCounsellorName && user.name && c.assignedCounsellorName.includes(user.name.split(' ')[0]))
+      const userEmail = (user.email || '').toLowerCase().trim();
+      const staffMember = this.staff.find(
+        (s) => s.authUid === user.id || s.id === user.id || (userEmail && s.email?.toLowerCase() === userEmail)
       );
+      const staffId = staffMember?.id;
+      const staffName = staffMember?.name || user.name;
+      const cleanName = (staffName || user.name || '').trim().toLowerCase();
+
+      return this.clients.filter((c) => {
+        if (c.assignedCounsellorId && (c.assignedCounsellorId === user.id || (staffId && c.assignedCounsellorId === staffId))) {
+          return true;
+        }
+        if (c.assignedCounsellorName && cleanName) {
+          const cName = c.assignedCounsellorName.trim().toLowerCase();
+          if (cName === cleanName) return true;
+          const firstPart = cleanName.split(' ')[0];
+          if (firstPart.length > 2 && cName.includes(firstPart)) return true;
+        }
+        return false;
+      });
     }
 
     if (user.role === 'Client') {
@@ -1325,10 +1550,19 @@ class DataService {
     }
 
     if (user.role === 'Counsellor') {
+      const userEmail = (user.email || '').toLowerCase().trim();
+      const staffMember = this.staff.find(
+        (s) => s.authUid === user.id || s.id === user.id || (userEmail && s.email?.toLowerCase() === userEmail)
+      );
+      const staffId = staffMember?.id;
+      const staffName = staffMember?.name || user.name;
+      const cleanName = (staffName || user.name || '').trim().toLowerCase();
+
       const isAssigned =
         client.assignedCounsellorId === user.id ||
-        (client.assignedCounsellorName && user.name && client.assignedCounsellorName.toLowerCase() === user.name.toLowerCase()) ||
-        (client.assignedCounsellorName && user.name && client.assignedCounsellorName.includes(user.name.split(' ')[0]));
+        (staffId && client.assignedCounsellorId === staffId) ||
+        (client.assignedCounsellorName && cleanName && client.assignedCounsellorName.toLowerCase() === cleanName) ||
+        (client.assignedCounsellorName && cleanName && client.assignedCounsellorName.toLowerCase().includes(cleanName.split(' ')[0]));
       if (isAssigned) return client;
       // Counsellor cannot access unassigned client
       return undefined;
@@ -1557,6 +1791,68 @@ class DataService {
       scheduledFor: now,
     });
 
+    // Authoritatively create Counsellor Assignment Record and In-App Notification for assigned counsellor
+    if (newClient.assignedCounsellorId) {
+      const counsellorStaff = this.staff.find((s) => s.id === newClient.assignedCounsellorId);
+      const assignedCounsellorName = newClient.assignedCounsellorName || counsellorStaff?.name || 'Counsellor';
+      const counsellorEmail = counsellorStaff?.email || '';
+
+      const assignmentRecord: CounsellorAssignmentHistory = {
+        id: `asgn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        clientId: newClient.id,
+        clientName: `${newClient.firstName} ${newClient.lastName}`,
+        previousCounsellorId: '',
+        previousCounsellorName: 'None (Initial Registration)',
+        newCounsellorId: newClient.assignedCounsellorId,
+        newCounsellorName: assignedCounsellorName,
+        changedById: biodata.authUid || 'system-intake',
+        changedByName: 'Initial Intake Registration',
+        changedAt: now,
+        reason: 'Initial intake assignment',
+      };
+
+      const notifTitle = 'New Client Assigned';
+      const notifBody = `You have been assigned a new client, ${newClient.id}.`;
+      const counsellorNotification: NotificationLog = {
+        id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        clientId: newClient.id,
+        clientName: `${newClient.firstName} ${newClient.lastName}`,
+        channel: 'Dashboard' as any,
+        recipient: counsellorEmail,
+        recipientTarget: newClient.assignedCounsellorId,
+        recipientUserId: newClient.assignedCounsellorId,
+        counsellorId: newClient.assignedCounsellorId,
+        counsellorName: assignedCounsellorName,
+        subject: notifTitle,
+        messageBody: notifBody,
+        triggerType: notifTitle,
+        status: 'Sent',
+        scheduledFor: now,
+        sentAt: now,
+        isRead: false,
+      };
+
+      if (db && isFirebaseConfigured) {
+        try {
+          await setDoc(doc(db, 'counsellorAssignments', assignmentRecord.id), cleanForFirestore(assignmentRecord));
+          await setDoc(doc(db, 'notifications', counsellorNotification.id), cleanForFirestore(counsellorNotification));
+          console.log(`[Firestore] Initial counsellor assignment & notification created for client ${newClient.id}`);
+        } catch (err: any) {
+          console.warn('[Firestore] Notice persisting initial counsellor assignment/notification:', err?.message || err);
+        }
+      }
+
+      this.counsellorAssignments.unshift(assignmentRecord);
+      this.notifications.unshift(counsellorNotification);
+
+      // Asynchronously trigger server-side email without blocking registration flow
+      this.dispatchCounsellorAssignmentEmail({
+        notificationId: counsellorNotification.id,
+        clientId: newClient.id,
+        counsellorId: newClient.assignedCounsellorId,
+      }).catch((e) => console.warn('[Email Dispatch] Registration email trigger notice:', e));
+    }
+
     this.logAudit('REGISTER_CLIENT', 'Client', newClient.id, `Client ${newClient.firstName} ${newClient.lastName} registered successfully.`);
     this.saveToStorage();
 
@@ -1739,6 +2035,8 @@ class DataService {
       recipient: staff.email,
       recipientTarget: staff.id,
       recipientUserId: staff.id,
+      counsellorId: staff.id,
+      counsellorName: staff.name,
       subject: notifTitle,
       messageBody: notifBody,
       triggerType: notifTitle,
@@ -1758,6 +2056,8 @@ class DataService {
         recipient: prevStaff.email,
         recipientTarget: prevStaff.id,
         recipientUserId: prevStaff.id,
+        counsellorId: prevStaff.id,
+        counsellorName: prevStaff.name,
         subject: 'Client Reassigned to Another Counsellor',
         messageBody: `${client.id} has been transferred to counsellor ${staff.name} by ${assignerName}. Reason: ${assignmentRecord.reason}`,
         triggerType: 'Client Reassigned',
@@ -1802,6 +2102,13 @@ class DataService {
     if (prevNotif) {
       this.notifications.unshift(prevNotif);
     }
+
+    // 4b. Non-blocking trigger for real email notification to newly assigned counsellor
+    this.dispatchCounsellorAssignmentEmail({
+      notificationId: counsellorNotification.id,
+      clientId: client.id,
+      counsellorId: staff.id,
+    }).catch((err) => console.warn('[Email Dispatch] Counsellor assignment email notice:', err));
 
     // 5. Audit log
     this.logAudit(
@@ -1914,17 +2221,23 @@ class DataService {
     return this.setStaffStatus(counsellorId, active);
   }
 
-  public getCounsellorNotifications(counsellorId?: string, _counsellorName?: string): NotificationLog[] {
+  public getCounsellorNotifications(counsellorId?: string, counsellorName?: string): NotificationLog[] {
     const user = authService.getCurrentUser();
     const targetId = counsellorId || user?.id;
+    const targetName = counsellorName || user?.name;
+    const userEmail = (user?.email || '').toLowerCase().trim();
 
-    if (!targetId) return [];
+    const staffMember = this.staff.find(
+      (s) => (targetId && (s.authUid === targetId || s.id === targetId)) || (userEmail && s.email?.toLowerCase() === userEmail)
+    );
+    const staffId = staffMember?.id;
 
     return this.notifications.filter((n) => {
       // Must match specifically this counsellor's ID or email - never leak notifications to other counsellors
-      if (n.recipientUserId && n.recipientUserId === targetId) return true;
-      if (n.recipientTarget && n.recipientTarget === targetId) return true;
-      if (user?.email && n.recipient && n.recipient.toLowerCase() === user.email.toLowerCase()) return true;
+      if (targetId && (n.counsellorId === targetId || n.recipientUserId === targetId || n.recipientTarget === targetId)) return true;
+      if (staffId && (n.counsellorId === staffId || n.recipientUserId === staffId || n.recipientTarget === staffId)) return true;
+      if (userEmail && n.recipient && n.recipient.toLowerCase() === userEmail) return true;
+      if (targetName && n.counsellorName && n.counsellorName.toLowerCase() === targetName.toLowerCase()) return true;
       return false;
     });
   }
@@ -1935,6 +2248,56 @@ class DataService {
       notif.isRead = true;
       this.saveToStorage();
       this.notify();
+    }
+  }
+
+  /**
+   * Dispatches real email notification to assigned counsellor via authenticated backend/Vercel serverless function
+   * Does NOT block or fail client operations if email transport is unavailable or fails.
+   */
+  public async dispatchCounsellorAssignmentEmail(payload: {
+    notificationId: string;
+    clientId: string;
+    counsellorId: string;
+  }): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      let idToken = '';
+      if (auth && auth.currentUser) {
+        idToken = await auth.currentUser.getIdToken();
+      }
+
+      if (!idToken) {
+        console.warn('[Email Dispatch] No active Firebase Auth ID token available.');
+        return { success: false, error: 'No authenticated Firebase user found.' };
+      }
+
+      const response = await fetch('/api/notifications/send-counsellor-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.success) {
+        console.log(`[Email Dispatch] Successfully dispatched assignment email for client ${payload.clientId} to counsellor ${payload.counsellorId}`);
+        // Record emailStatus in local memory and storage
+        const notif = this.notifications.find((n) => n.id === payload.notificationId);
+        if (notif) {
+          notif.emailStatus = 'sent';
+          notif.emailSentAt = new Date().toISOString();
+          this.saveToStorage();
+        }
+        return { success: true, message: result.message };
+      } else {
+        console.warn('[Email Dispatch] Notice from email server:', result.error || response.statusText);
+        return { success: false, error: result.error || response.statusText };
+      }
+    } catch (err: any) {
+      console.warn('[Email Dispatch] Network notice dispatching counsellor email:', err?.message || err);
+      return { success: false, error: err?.message || 'Network error' };
     }
   }
 

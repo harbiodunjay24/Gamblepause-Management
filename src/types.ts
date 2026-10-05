@@ -204,6 +204,10 @@ export interface NotificationLog {
   status: 'Sent' | 'Pending' | 'Queued' | 'Failed' | 'Not configured' | 'Simulated';
   scheduledFor: string;
   sentAt?: string;
+  emailStatus?: 'pending' | 'sent' | 'failed';
+  emailSentAt?: string;
+  emailMessageId?: string;
+  emailLastError?: string;
 }
 
 export type NotificationItem = NotificationLog;

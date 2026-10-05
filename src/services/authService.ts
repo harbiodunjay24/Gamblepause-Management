@@ -119,7 +119,16 @@ class AuthService {
           }
 
           let clientId: string | undefined = undefined;
-          let displayName = fbUser.displayName || fbUser.email?.split('@')[0] || 'User';
+          const canonicalCounsellorNames: Record<string, string> = {
+            'benjamin@gamblepause.org': 'Benjamin',
+            'micheal.akinniku@gamblepause.org': 'Micheal Akinniku',
+            'celia.badmus@gamblepause.org': 'Celia Badmus',
+          };
+          let displayName =
+            canonicalCounsellorNames[cleanEmail] ||
+            fbUser.displayName ||
+            fbUser.email?.split('@')[0] ||
+            'User';
           let isDeactivated = false;
 
           if (db) {
@@ -454,7 +463,15 @@ class AuthService {
       }
 
       let clientId: string | undefined = undefined;
-      let displayName = fbUser.displayName || cleanEmail.split('@')[0];
+      const canonicalCounsellorNames: Record<string, string> = {
+        'benjamin@gamblepause.org': 'Benjamin',
+        'micheal.akinniku@gamblepause.org': 'Micheal Akinniku',
+        'celia.badmus@gamblepause.org': 'Celia Badmus',
+      };
+      let displayName =
+        canonicalCounsellorNames[cleanEmail] ||
+        fbUser.displayName ||
+        cleanEmail.split('@')[0];
       let isActive = true;
       let isDeactivated = false;
 

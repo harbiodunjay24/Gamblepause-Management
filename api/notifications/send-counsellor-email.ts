@@ -51,11 +51,24 @@ function createSmtpTransporter() {
  * POST /api/notifications/send-counsellor-email
  */
 export default async function handler(req: any, res: any) {
+  // CORS Headers support
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Handle browser preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
+  console.log(`[Serverless Email API] Incoming request received. Method: ${req.method}, Path: ${req.url}`);
+
   // 1. Method verification
   if (req.method !== 'POST') {
-    res.setHeader('Allow', ['POST']);
+    res.setHeader('Allow', ['POST', 'OPTIONS']);
     return res.status(405).json({
       success: false,
+      stage: 'method_validation',
       error: `Method ${req.method} Not Allowed. Only POST is accepted.`,
     });
   }
@@ -65,6 +78,7 @@ export default async function handler(req: any, res: any) {
   if (!contentType.includes('application/json')) {
     return res.status(400).json({
       success: false,
+      stage: 'content_type_validation',
       error: 'Invalid Content-Type. application/json is required.',
     });
   }
@@ -72,16 +86,20 @@ export default async function handler(req: any, res: any) {
   // 3. Authenticate caller via Firebase ID Token
   const authHeader = req.headers.authorization || '';
   if (!authHeader.startsWith('Bearer ')) {
+    console.warn('[Serverless Email API] Authentication failed: Missing or invalid Authorization header.');
     return res.status(401).json({
       success: false,
+      stage: 'authentication',
       error: 'Unauthorized: Missing or invalid Authorization header. Expected Bearer <Firebase ID Token>.',
     });
   }
 
   const idToken = authHeader.substring(7).trim();
   if (!idToken) {
+    console.warn('[Serverless Email API] Authentication failed: Empty Bearer token.');
     return res.status(401).json({
       success: false,
+      stage: 'authentication',
       error: 'Unauthorized: Empty Firebase ID token.',
     });
   }
@@ -90,11 +108,13 @@ export default async function handler(req: any, res: any) {
   try {
     const adminAuth = getAdminAuthInstance();
     decodedToken = await adminAuth.verifyIdToken(idToken);
+    console.log('[Serverless Email API] Authentication success: Token cryptographically verified via Firebase Admin.');
   } catch (err: any) {
-    console.error('[Email API] Token verification failed:', err?.message || err);
+    console.error('[Serverless Email API] Authentication failed: Token verification error:', err?.message || err);
     return res.status(401).json({
       success: false,
-      error: 'Unauthorized: Invalid or expired Firebase ID token.',
+      stage: 'authentication',
+      error: `Unauthorized: Invalid or expired Firebase ID token (${err?.message || 'verification_failed'}).`,
     });
   }
 
@@ -108,16 +128,21 @@ export default async function handler(req: any, res: any) {
   if (isTest === true) {
     const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(callerEmail);
     if (!isSuperAdmin) {
+      console.warn(`[Serverless Email API] Diagnostic test rejected: Caller ${callerEmail || callerUid} is not a Super Admin.`);
       return res.status(403).json({
         success: false,
+        stage: 'authorization',
         error: 'Forbidden: SMTP transport verification is restricted to Super Admin accounts.',
       });
     }
 
+    console.log('[Serverless Email API] Running diagnostic SMTP transport verification...');
     const transporter = createSmtpTransporter();
     if (!transporter) {
+      console.warn('[Serverless Email API] Diagnostic test result: SMTP credentials not configured (missing SMTP_USER/SMTP_PASSWORD).');
       return res.status(503).json({
         success: false,
+        stage: 'smtp_config',
         error: 'SMTP transport is not configured. Please set SMTP_USER and SMTP_PASSWORD environment variables in Vercel.',
         code: 'SMTP_NOT_CONFIGURED',
       });
@@ -125,14 +150,17 @@ export default async function handler(req: any, res: any) {
 
     try {
       await transporter.verify();
+      console.log('[Serverless Email API] Diagnostic test result: SMTP connection to Gmail verified successfully.');
       return res.status(200).json({
         success: true,
+        stage: 'smtp_verified',
         message: 'SMTP transport connection verified successfully with Gmail servers.',
       });
     } catch (verifyErr: any) {
-      console.error('[Email API] SMTP verification failed:', verifyErr);
+      console.error('[Serverless Email API] Diagnostic test result: SMTP connection failed:', verifyErr?.message || verifyErr);
       return res.status(500).json({
         success: false,
+        stage: 'smtp_connection',
         error: `SMTP transport verification failed: ${verifyErr?.message || verifyErr}`,
       });
     }
@@ -140,17 +168,23 @@ export default async function handler(req: any, res: any) {
 
   // 5. Validate required payload parameters
   if (!notificationId || !clientId || !counsellorId) {
+    console.warn('[Serverless Email API] Payload validation failed: missing notificationId, clientId, or counsellorId.');
     return res.status(400).json({
       success: false,
+      stage: 'payload_validation',
       error: 'Missing required parameters: notificationId, clientId, and counsellorId are mandatory.',
     });
   }
 
+  console.log(`[Serverless Email API] Processing email dispatch for client: ${clientId}, counsellor: ${counsellorId}, notif: ${notificationId}`);
+
   // 6. Check duplicate email protection (Idempotency)
   // Check 6a: In-memory concurrency deduplication
   if (sentOrInFlightNotificationIds.has(notificationId)) {
+    console.log(`[Serverless Email API] Idempotency notice: Notification ${notificationId} is already in-flight or sent.`);
     return res.status(200).json({
       success: true,
+      stage: 'idempotency',
       message: 'Email already sent or currently being processed for this notification.',
       alreadySent: true,
     });
@@ -166,8 +200,10 @@ export default async function handler(req: any, res: any) {
         const notifData = notifSnap.data();
         if (notifData && notifData.emailStatus === 'sent') {
           sentOrInFlightNotificationIds.add(notificationId);
+          console.log(`[Serverless Email API] Idempotency notice: Firestore records notification ${notificationId} as already sent.`);
           return res.status(200).json({
             success: true,
+            stage: 'idempotency',
             message: 'Email already sent for this notification record.',
             alreadySent: true,
             emailSentAt: notifData.emailSentAt,
@@ -175,7 +211,7 @@ export default async function handler(req: any, res: any) {
         }
       }
     } catch (e: any) {
-      console.warn('[Email API] Firestore idempotency check notice:', e?.message || e);
+      console.warn('[Serverless Email API] Firestore idempotency check notice:', e?.message || e);
     }
   }
 
@@ -202,16 +238,20 @@ export default async function handler(req: any, res: any) {
         }
       }
     } catch (e) {
-      console.warn('[Email API] Error querying Firestore staff collection:', e);
+      console.warn('[Serverless Email API] Error querying Firestore staff collection:', e);
     }
   }
 
   if (!counsellorEmail) {
+    console.warn(`[Serverless Email API] Counsellor resolution failed: Unrecognized counsellor ID "${counsellorId}".`);
     return res.status(400).json({
       success: false,
+      stage: 'counsellor_resolution',
       error: `Unrecognized or unauthorized counsellor ID: "${counsellorId}". Email recipient cannot be resolved from trusted staff records.`,
     });
   }
+
+  console.log(`[Serverless Email API] Resolved counsellor: ${counsellorName} <${counsellorEmail}>`);
 
   // 8. Confirm client assignment if Firestore is available
   if (adminDb) {
@@ -220,23 +260,26 @@ export default async function handler(req: any, res: any) {
       if (clientDoc.exists) {
         const cData = clientDoc.data();
         if (cData && cData.assignedCounsellorId && cData.assignedCounsellorId !== counsellorId) {
+          console.warn(`[Serverless Email API] Assignment mismatch: Client ${clientId} is assigned to ${cData.assignedCounsellorId}, not ${counsellorId}.`);
           return res.status(400).json({
             success: false,
+            stage: 'assignment_verification',
             error: `Mismatched assignment: client ${clientId} is currently assigned to ${cData.assignedCounsellorId}, not ${counsellorId}.`,
           });
         }
       }
     } catch (e) {
-      console.warn('[Email API] Client verification notice:', e);
+      console.warn('[Serverless Email API] Client verification notice:', e);
     }
   }
 
   // 9. Check SMTP transport configuration
   const transporter = createSmtpTransporter();
   if (!transporter) {
-    console.warn('[Email API] SMTP_USER or SMTP_PASSWORD is not configured on server.');
+    console.warn('[Serverless Email API] SMTP configuration missing: SMTP_USER or SMTP_PASSWORD is not set in environment.');
     return res.status(503).json({
       success: false,
+      stage: 'smtp_config',
       error: 'SMTP transport is not configured. Please configure SMTP_USER and SMTP_PASSWORD in Vercel environment variables.',
       code: 'SMTP_NOT_CONFIGURED',
     });
@@ -277,6 +320,7 @@ GamblePause Initiative Africa`;
 
   // 11. Dispatch email
   try {
+    console.log(`[Serverless Email API] Sending email via SMTP to ${counsellorEmail}...`);
     const info = await transporter.sendMail({
       from: `"GamblePause Initiative Africa" <${fromAddress}>`,
       to: counsellorEmail,
@@ -285,7 +329,7 @@ GamblePause Initiative Africa`;
       html: emailHtml,
     });
 
-    console.log(`[Email API] Successfully sent counsellor assignment email to ${counsellorEmail} for client ${clientId}. MessageID: ${info.messageId}`);
+    console.log(`[Serverless Email API] Email dispatched successfully to ${counsellorEmail} for client ${clientId}. MessageID: ${info.messageId}`);
 
     // Update Firestore notification record with idempotency tracking
     if (adminDb) {
@@ -299,19 +343,20 @@ GamblePause Initiative Africa`;
           { merge: true }
         );
       } catch (dbErr) {
-        console.warn('[Email API] Failed to update emailStatus in Firestore:', dbErr);
+        console.warn('[Serverless Email API] Failed to update emailStatus in Firestore:', dbErr);
       }
     }
 
     return res.status(200).json({
       success: true,
+      stage: 'dispatched',
       message: `Counsellor notification email dispatched successfully to ${counsellorName}.`,
       messageId: info.messageId,
     });
   } catch (sendErr: any) {
     // Release in-flight flag so it can be retried
     sentOrInFlightNotificationIds.delete(notificationId);
-    console.error(`[Email API] Error sending email to ${counsellorEmail}:`, sendErr);
+    console.error(`[Serverless Email API] SMTP send error to ${counsellorEmail}:`, sendErr?.message || sendErr);
 
     if (adminDb) {
       try {
@@ -328,6 +373,7 @@ GamblePause Initiative Africa`;
 
     return res.status(500).json({
       success: false,
+      stage: 'smtp_send',
       error: `Failed to dispatch email via SMTP: ${sendErr?.message || sendErr}`,
     });
   }

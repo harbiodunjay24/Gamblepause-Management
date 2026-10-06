@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { StaffUser, ClientStatus, Client } from '../../types';
+import { NIGERIAN_STATES } from '../../data/demoData';
 import {
   exportCompleteClientDataExcel,
   exportAssessment1Excel,
@@ -44,6 +45,8 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
   const [dateRange, setDateRange] = useState<'all' | '30d' | '90d' | '365d'>('all');
   const [selectedCounsellorId, setSelectedCounsellorId] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
+  const [selectedCountry, setSelectedCountry] = useState<string>('all');
+  const [selectedState, setSelectedState] = useState<string>('all');
   const [selectedSingleClientId, setSelectedSingleClientId] = useState<string>('');
   const [clientSearchQuery, setClientSearchQuery] = useState<string>('');
   const [exportedNotice, setExportedNotice] = useState<string | null>(null);
@@ -61,45 +64,119 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
   const allCaseNotes = dataService.getAllCaseNotes();
   const staff = dataService.getStaff();
   const counsellors = staff.filter((s) => s.role === 'Counsellor');
-  const metrics = dataService.getDashboardMetrics();
 
-  // Filter clients based on selected controls
-  const filteredClients = allClients.filter((client) => {
-    // Counsellor filter
-    if (selectedCounsellorId !== 'all') {
-      if (client.assignedCounsellorId !== selectedCounsellorId) {
-        return false;
+  // Extract available countries
+  const availableCountries = useMemo(() => {
+    const set = new Set<string>();
+    allClients.forEach((c) => {
+      if (c.country && c.country !== 'Not specified') {
+        set.add(c.country);
       }
-    }
+    });
+    set.add('Nigeria');
+    set.add('Ghana');
+    set.add('Other African Countries');
+    return Array.from(set).sort();
+  }, [allClients]);
 
-    // Status filter
-    if (selectedStatus !== 'all') {
-      if (client.status !== selectedStatus) {
-        return false;
+  // Extract available states for chosen country
+  const availableStates = useMemo(() => {
+    const set = new Set<string>();
+    const countryClients = selectedCountry === 'all'
+      ? allClients
+      : allClients.filter((c) => {
+          const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
+          return cCountry.toLowerCase() === selectedCountry.toLowerCase();
+        });
+
+    countryClients.forEach((c) => {
+      if (c.state && c.state !== 'Not specified') {
+        set.add(c.state);
       }
-    }
+    });
 
-    // Date range filter based on registrationDate
-    if (dateRange !== 'all') {
-      const now = new Date().getTime();
-      const regTime = new Date(client.registrationDate).getTime();
-      const diffDays = (now - regTime) / (1000 * 3600 * 24);
-      if (dateRange === '30d' && diffDays > 30) return false;
-      if (dateRange === '90d' && diffDays > 90) return false;
-      if (dateRange === '365d' && diffDays > 365) return false;
+    if (selectedCountry === 'Nigeria' || selectedCountry === 'all') {
+      NIGERIAN_STATES.forEach((s) => set.add(s));
     }
+    set.add('Not specified');
+    return Array.from(set).sort((a, b) => {
+      if (a === 'Not specified') return 1;
+      if (b === 'Not specified') return -1;
+      return a.localeCompare(b);
+    });
+  }, [allClients, selectedCountry]);
 
-    // Text search filter
-    if (clientSearchQuery.trim()) {
-      const q = clientSearchQuery.toLowerCase();
-      const matchesId = client.id.toLowerCase().includes(q);
-      const matchesName = `${client.firstName} ${client.lastName}`.toLowerCase().includes(q);
-      const matchesPhone = client.phone?.includes(q);
-      if (!matchesId && !matchesName && !matchesPhone) return false;
-    }
+  // Filter clients based on selected controls using strict AND logic
+  const filteredClients = useMemo(() => {
+    return allClients.filter((client) => {
+      // Counsellor filter (AND logic)
+      if (selectedCounsellorId !== 'all') {
+        if (client.assignedCounsellorId !== selectedCounsellorId) {
+          return false;
+        }
+      }
 
-    return true;
-  });
+      // Status filter (AND logic)
+      if (selectedStatus !== 'all') {
+        if (client.status !== selectedStatus) {
+          return false;
+        }
+      }
+
+      // Country filter (AND logic)
+      if (selectedCountry !== 'all') {
+        const cCountry = client.country || (NIGERIAN_STATES.includes(client.state) ? 'Nigeria' : 'Not specified');
+        if (cCountry.toLowerCase() !== selectedCountry.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // State filter (AND logic)
+      if (selectedState !== 'all') {
+        const cState = client.state || 'Not specified';
+        if (cState.toLowerCase() !== selectedState.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Date range filter based on registrationDate (AND logic)
+      if (dateRange !== 'all') {
+        const now = new Date().getTime();
+        const regTime = new Date(client.registrationDate).getTime();
+        const diffDays = (now - regTime) / (1000 * 3600 * 24);
+        if (dateRange === '30d' && diffDays > 30) return false;
+        if (dateRange === '90d' && diffDays > 90) return false;
+        if (dateRange === '365d' && diffDays > 365) return false;
+      }
+
+      // Text search filter (AND logic)
+      if (clientSearchQuery.trim()) {
+        const q = clientSearchQuery.toLowerCase();
+        const matchesId = client.id.toLowerCase().includes(q);
+        const matchesName = `${client.firstName} ${client.lastName}`.toLowerCase().includes(q);
+        const matchesPhone = client.phone?.includes(q);
+        const matchesLocation =
+          (client.location && client.location.toLowerCase().includes(q)) ||
+          (client.state && client.state.toLowerCase().includes(q)) ||
+          (client.country && client.country.toLowerCase().includes(q));
+        if (!matchesId && !matchesName && !matchesPhone && !matchesLocation) return false;
+      }
+
+      return true;
+    });
+  }, [
+    allClients,
+    selectedCounsellorId,
+    selectedStatus,
+    selectedCountry,
+    selectedState,
+    dateRange,
+    clientSearchQuery,
+  ]);
+
+  const metrics = useMemo(() => {
+    return dataService.getDashboardMetrics(filteredClients);
+  }, [filteredClients]);
 
   const filteredClientIds = new Set(filteredClients.map((c) => c.id));
   const filteredSubmissions = allSubmissions.filter((s) => filteredClientIds.has(s.clientId));
@@ -277,7 +354,44 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 text-xs">
+          {/* Country */}
+          <div>
+            <label className="block text-[11px] font-bold text-gray-600 mb-1">Country</label>
+            <select
+              value={selectedCountry}
+              onChange={(e) => {
+                setSelectedCountry(e.target.value);
+                setSelectedState('all');
+              }}
+              className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Countries</option>
+              {availableCountries.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* State */}
+          <div>
+            <label className="block text-[11px] font-bold text-gray-600 mb-1">State / Region</label>
+            <select
+              value={selectedState}
+              onChange={(e) => setSelectedState(e.target.value)}
+              className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All States</option>
+              {availableStates.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Date Range */}
           <div>
             <label className="block text-[11px] font-bold text-gray-600 mb-1">Registration Date</label>
@@ -343,6 +457,30 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
             </div>
           </div>
         </div>
+
+        {(selectedCountry !== 'all' ||
+          selectedState !== 'all' ||
+          selectedCounsellorId !== 'all' ||
+          selectedStatus !== 'all' ||
+          dateRange !== 'all' ||
+          clientSearchQuery.trim()) && (
+          <div className="pt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedCountry('all');
+                setSelectedState('all');
+                setSelectedCounsellorId('all');
+                setSelectedStatus('all');
+                setDateRange('all');
+                setClientSearchQuery('');
+              }}
+              className="text-xs font-bold text-red-600 hover:text-red-700 underline cursor-pointer"
+            >
+              Reset All Filters
+            </button>
+          </div>
+        )}
       </div>
 
       {/* FEATURE 2: PRIMARY COMPLETE CLIENT DATA EXPORT CARD */}

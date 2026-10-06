@@ -33,6 +33,7 @@ export const ClientList: React.FC<ClientListProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [counsellorFilter, setCounsellorFilter] = useState<string>('all');
+  const [countryFilter, setCountryFilter] = useState<string>('all');
   const [stateFilter, setStateFilter] = useState<string>('all');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -49,34 +50,87 @@ export const ClientList: React.FC<ClientListProps> = ({
   const clients = dataService.getClients();
   const staff = dataService.getStaff();
 
+  // Extract available countries
+  const availableCountries = useMemo(() => {
+    const set = new Set<string>();
+    clients.forEach((c) => {
+      if (c.country && c.country !== 'Not specified') {
+        set.add(c.country);
+      }
+    });
+    set.add('Nigeria');
+    set.add('Ghana');
+    set.add('Other African Countries');
+    return Array.from(set).sort();
+  }, [clients]);
+
+  // Extract available states for chosen country
+  const availableStates = useMemo(() => {
+    const set = new Set<string>();
+    const countryClients = countryFilter === 'all'
+      ? clients
+      : clients.filter((c) => {
+          const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
+          return cCountry.toLowerCase() === countryFilter.toLowerCase();
+        });
+
+    countryClients.forEach((c) => {
+      if (c.state && c.state !== 'Not specified') {
+        set.add(c.state);
+      }
+    });
+
+    if (countryFilter === 'Nigeria' || countryFilter === 'all') {
+      NIGERIAN_STATES.forEach((s) => set.add(s));
+    }
+    set.add('Not specified');
+    return Array.from(set).sort((a, b) => {
+      if (a === 'Not specified') return 1;
+      if (b === 'Not specified') return -1;
+      return a.localeCompare(b);
+    });
+  }, [clients, countryFilter]);
+
   const filteredClients = useMemo(() => {
     return clients.filter((c) => {
-      // Search matching: ID, name, email, phone
+      // Search matching: ID, name, email, phone, location, country
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesId = c.id.toLowerCase().includes(q);
         const matchesName = `${c.firstName} ${c.lastName}`.toLowerCase().includes(q);
         const matchesEmail = c.email.toLowerCase().includes(q);
         const matchesPhone = c.phone.replace(/[^0-9]/g, '').includes(q.replace(/[^0-9]/g, ''));
-        const matchesLocation = c.location.toLowerCase().includes(q) || c.state.toLowerCase().includes(q);
+        const matchesLocation =
+          (c.location && c.location.toLowerCase().includes(q)) ||
+          (c.state && c.state.toLowerCase().includes(q)) ||
+          (c.country && c.country.toLowerCase().includes(q));
 
         if (!matchesId && !matchesName && !matchesEmail && !matchesPhone && !matchesLocation) {
           return false;
         }
       }
 
-      // Filter by status
+      // Filter by status (AND logic)
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
 
-      // Filter by counsellor
+      // Filter by counsellor (AND logic)
       if (counsellorFilter !== 'all' && c.assignedCounsellorId !== counsellorFilter) return false;
 
-      // Filter by state
-      if (stateFilter !== 'all' && c.state !== stateFilter) return false;
+      // Filter by country (AND logic)
+      if (countryFilter !== 'all') {
+        const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
+        if (cCountry.toLowerCase() !== countryFilter.toLowerCase()) return false;
+      }
+
+      // Filter by state (AND logic)
+      if (stateFilter !== 'all') {
+        const cState = c.state || 'Not specified';
+        if (cState.toLowerCase() !== stateFilter.toLowerCase()) return false;
+      }
 
       return true;
     });
-  }, [clients, searchQuery, statusFilter, counsellorFilter, stateFilter]);
+  }, [clients, searchQuery, statusFilter, counsellorFilter, countryFilter, stateFilter]);
 
   if (!isLoaded && clients.length === 0) {
     return (
@@ -188,27 +242,48 @@ export const ClientList: React.FC<ClientListProps> = ({
           </select>
 
           <select
+            value={countryFilter}
+            onChange={(e) => {
+              setCountryFilter(e.target.value);
+              setStateFilter('all');
+            }}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+          >
+            <option value="all">All Countries</option>
+            {availableCountries.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+
+          <select
             value={stateFilter}
             onChange={(e) => setStateFilter(e.target.value)}
-            className="px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
+            className="px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
           >
             <option value="all">All States</option>
-            {NIGERIAN_STATES.map((st) => (
+            {availableStates.map((st) => (
               <option key={st} value={st}>
                 {st}
               </option>
             ))}
           </select>
 
-          {(searchQuery || statusFilter !== 'all' || counsellorFilter !== 'all' || stateFilter !== 'all') && (
+          {(searchQuery ||
+            statusFilter !== 'all' ||
+            counsellorFilter !== 'all' ||
+            countryFilter !== 'all' ||
+            stateFilter !== 'all') && (
             <button
               onClick={() => {
                 setSearchQuery('');
                 setStatusFilter('all');
                 setCounsellorFilter('all');
+                setCountryFilter('all');
                 setStateFilter('all');
               }}
-              className="text-red-600 hover:text-red-700 font-bold ml-auto"
+              className="text-red-600 hover:text-red-700 font-bold ml-auto cursor-pointer"
             >
               Reset Filters
             </button>
@@ -283,8 +358,17 @@ export const ClientList: React.FC<ClientListProps> = ({
 
                       {/* State & Location */}
                       <td className="py-4 px-4">
-                        <div className="font-semibold text-gray-800">{client.state}</div>
-                        <div className="text-[11px] text-gray-500 truncate max-w-[140px]">{client.location}</div>
+                        <div className="font-semibold text-gray-800 flex items-center gap-1.5 flex-wrap">
+                          <span>{client.state}</span>
+                          {client.country && client.country !== 'Nigeria' && (
+                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                              {client.country}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 truncate max-w-[150px]" title={client.location || client.address}>
+                          {client.location || client.address || '—'}
+                        </div>
                       </td>
 
                       {/* Current Stage */}

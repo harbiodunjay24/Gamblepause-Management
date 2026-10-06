@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/notifications/send-counsellor-email",
+      "destination": "/api/notifications/send-counsellor-email"
+    },
+    {
+      "source": "/api/send-counsellor-email",
+      "destination": "/api/send-counsellor-email"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import { auth, db, firebaseConfig, isFirebaseConfigured } from '../lib/firebase'
 import { dataService } from './dataService';
 import { authService } from './authService';
 import { Client, AssessmentSubmission, AssessmentAnswer } from '../types';
+import { NIGERIAN_STATES } from '../data/demoData';
 
 export const AUTHORIZED_MIGRATION_ADMIN = 'ayodejiharbiodun24@gmail.com';
 const SECONDARY_MIGRATION_APP_NAME = 'HistoricalMigrationAuthApp';
@@ -31,6 +32,393 @@ const CONSUMED_IDS_STORAGE_KEY = 'gp_consumed_migration_client_ids';
 // GP-0018 was allocated during the test and subsequently removed; it must NEVER be reused
 const PERMANENTLY_CONSUMED_CLIENT_IDS = new Set<string>(['GP-0018']);
 
+export interface LocationResolutionResult {
+  country: string;
+  state: string;
+  location: string;
+  isStateExtractedFromAddress: boolean;
+  isCountryFromSource: boolean;
+  rawAddressPreserved: string;
+}
+
+// Major Nigerian cities and towns mapped to their authoritative state
+const NIGERIAN_CITY_TO_STATE_MAP: Record<string, string> = {
+  // Lagos
+  ikeja: 'Lagos',
+  ikoyi: 'Lagos',
+  lekki: 'Lagos',
+  'victoria island': 'Lagos',
+  vi: 'Lagos',
+  surulere: 'Lagos',
+  yaba: 'Lagos',
+  ikorodu: 'Lagos',
+  badagry: 'Lagos',
+  epe: 'Lagos',
+  agege: 'Lagos',
+  oshodi: 'Lagos',
+  alimosho: 'Lagos',
+  mushin: 'Lagos',
+  apapa: 'Lagos',
+  festac: 'Lagos',
+  gbagada: 'Lagos',
+  maryland: 'Lagos',
+  ojodu: 'Lagos',
+  magodo: 'Lagos',
+
+  // Oyo
+  ibadan: 'Oyo',
+  ogbomoso: 'Oyo',
+  iseyin: 'Oyo',
+  saki: 'Oyo',
+
+  // Ogun
+  abeokuta: 'Ogun',
+  'ijebu ode': 'Ogun',
+  sagamu: 'Ogun',
+  ota: 'Ogun',
+  ifo: 'Ogun',
+
+  // Delta
+  warri: 'Delta',
+  asaba: 'Delta',
+  effurun: 'Delta',
+  sapele: 'Delta',
+  ughelli: 'Delta',
+  agbor: 'Delta',
+
+  // Rivers
+  'port harcourt': 'Rivers',
+  ph: 'Rivers',
+  bonny: 'Rivers',
+  eleme: 'Rivers',
+
+  // Edo
+  'benin city': 'Edo',
+  benin: 'Edo',
+  ekpoma: 'Edo',
+  auchi: 'Edo',
+
+  // Kwara
+  ilorin: 'Kwara',
+  offa: 'Kwara',
+
+  // Cross River
+  calabar: 'Cross River',
+  ikom: 'Cross River',
+  ogoja: 'Cross River',
+
+  // Enugu
+  nsukka: 'Enugu',
+
+  // Anambra
+  awka: 'Anambra',
+  onitsha: 'Anambra',
+  nnewi: 'Anambra',
+
+  // Abia
+  umuahia: 'Abia',
+  aba: 'Abia',
+
+  // Akwa Ibom
+  uyo: 'Akwa Ibom',
+  eket: 'Akwa Ibom',
+  'ikot ekpene': 'Akwa Ibom',
+
+  // Kaduna
+  zaria: 'Kaduna',
+  kafanchan: 'Kaduna',
+
+  // Plateau
+  jos: 'Plateau',
+  bukuru: 'Plateau',
+
+  // Benue
+  makurdi: 'Benue',
+  gboko: 'Benue',
+  otukpo: 'Benue',
+
+  // Imo
+  owerri: 'Imo',
+  orlu: 'Imo',
+  okigwe: 'Imo',
+
+  // Borno
+  maiduguri: 'Borno',
+
+  // Niger
+  minna: 'Niger',
+  suleja: 'Niger',
+  bida: 'Niger',
+
+  // Osun
+  osogbo: 'Osun',
+  'ile-ife': 'Osun',
+  ife: 'Osun',
+  ilesa: 'Osun',
+  ede: 'Osun',
+
+  // Ondo
+  akure: 'Ondo',
+  owo: 'Ondo',
+
+  // Ekiti
+  'ado-ekiti': 'Ekiti',
+  'ado ekiti': 'Ekiti',
+  ikere: 'Ekiti',
+
+  // FCT - Abuja
+  abuja: 'FCT - Abuja',
+  garki: 'FCT - Abuja',
+  wuse: 'FCT - Abuja',
+  maitama: 'FCT - Abuja',
+  asokoro: 'FCT - Abuja',
+  kubwa: 'FCT - Abuja',
+  gwarinpa: 'FCT - Abuja',
+
+  // Sokoto
+  sokoto: 'Sokoto',
+
+  // Kano
+  kano: 'Kano',
+
+  // Katsina
+  katsina: 'Katsina',
+  daura: 'Katsina',
+
+  // Bauchi
+  bauchi: 'Bauchi',
+  azare: 'Bauchi',
+
+  // Bayelsa
+  yenagoa: 'Bayelsa',
+
+  // Adamawa
+  yola: 'Adamawa',
+  mubi: 'Adamawa',
+
+  // Gombe
+  gombe: 'Gombe',
+
+  // Jigawa
+  dutse: 'Jigawa',
+
+  // Kebbi
+  'birnin kebbi': 'Kebbi',
+
+  // Kogi
+  lokoja: 'Kogi',
+  okene: 'Kogi',
+
+  // Nasarawa
+  lafia: 'Nasarawa',
+  keffi: 'Nasarawa',
+  karu: 'Nasarawa',
+
+  // Taraba
+  jalingo: 'Taraba',
+
+  // Yobe
+  damaturu: 'Yobe',
+  potiskum: 'Yobe',
+
+  // Zamfara
+  gusau: 'Zamfara',
+
+  // Ebonyi
+  abakaliki: 'Ebonyi',
+};
+
+/**
+ * Deterministic Country and State resolution complying with all Location Rules:
+ * 1. Country comes from source spreadsheet when field exists.
+ * 2. Never automatically force Country = Nigeria.
+ * 3. State priority:
+ *    a. Explicit State column from spreadsheet.
+ *    b. If State absent, safely extract an explicitly stated Nigerian state from address.
+ *    c. Deterministic mapping utility.
+ *    d. If state cannot be determined reliably, use "Not specified".
+ * 4. NEVER default an unknown state to Lagos.
+ * 5. NEVER fabricate a state from an incomplete address.
+ * 6. Preserve original/raw address exactly as supplied.
+ * 7. Foreign countries remain foreign countries.
+ * 8. Do not convert Ghana, Other African Countries, etc. into Nigeria.
+ * 9. Do not infer country/state from name.
+ * 10. Do not overwrite valid source location with hardcoded default.
+ */
+export function resolveCountryAndState(
+  rawCountryInput?: string,
+  rawStateInput?: string,
+  rawAddressInput?: string,
+  rawLocationInput?: string
+): LocationResolutionResult {
+  const rawCountry = (rawCountryInput || '').trim();
+  const rawState = (rawStateInput || '').trim();
+  const rawAddress = (rawAddressInput || '').trim();
+  const rawLocation = (rawLocationInput || '').trim();
+
+  // 1. Resolve Country
+  let country = '';
+  let isCountryFromSource = false;
+
+  if (rawCountry) {
+    isCountryFromSource = true;
+    const lowerC = rawCountry.toLowerCase();
+    if (lowerC === 'ghana') {
+      country = 'Ghana';
+    } else if (
+      lowerC === 'other african countries' ||
+      lowerC === 'other african country' ||
+      lowerC === 'other africa'
+    ) {
+      country = 'Other African Countries';
+    } else if (lowerC === 'nigeria') {
+      country = 'Nigeria';
+    } else {
+      country = rawCountry;
+    }
+  } else {
+    // Check address for foreign country indicators if Country column was absent
+    const lowerAddr = rawAddress.toLowerCase();
+    if (/\bghana\b/i.test(lowerAddr)) {
+      country = 'Ghana';
+    } else if (/\bother\s+african\s+countries?\b/i.test(lowerAddr)) {
+      country = 'Other African Countries';
+    } else if (/\bnigeria\b/i.test(lowerAddr)) {
+      country = 'Nigeria';
+    }
+  }
+
+  const isForeignCountry = Boolean(
+    country && country !== 'Nigeria' && country !== 'Not specified'
+  );
+
+  // 2. Resolve State
+  let state = '';
+  let isStateExtractedFromAddress = false;
+
+  // A. Priority a: Explicit State column from source
+  if (rawState) {
+    const lowerS = rawState.toLowerCase();
+    // Normalize FCT / Abuja
+    if (
+      lowerS === 'abuja' ||
+      lowerS === 'fct' ||
+      lowerS === 'fct - abuja' ||
+      lowerS === 'federal capital territory' ||
+      lowerS === 'f.c.t'
+    ) {
+      state = 'FCT - Abuja';
+    } else {
+      // Check standard Nigerian states
+      const matchedNigerianState = NIGERIAN_STATES.find(
+        (ns) =>
+          ns.toLowerCase() === lowerS ||
+          lowerS === `${ns.toLowerCase()} state` ||
+          lowerS === `state of ${ns.toLowerCase()}`
+      );
+      if (matchedNigerianState) {
+        state = matchedNigerianState;
+      } else {
+        // If it's a non-Nigerian state or literal text, preserve it
+        state = rawState;
+      }
+    }
+    // If state is an identified Nigerian state and country was not yet known, set Country = Nigeria
+    if (!country && NIGERIAN_STATES.includes(state)) {
+      country = 'Nigeria';
+    }
+  }
+
+  // B. Priority b: If state is absent and country is NOT a foreign country, safely extract from address
+  if (!state && !isForeignCountry && rawAddress) {
+    const lowerAddr = rawAddress.toLowerCase();
+
+    // 1. Check FCT / Abuja first
+    if (/\b(fct\s*-\s*abuja|fct|abuja|federal\s+capital\s+territory)\b/i.test(lowerAddr)) {
+      state = 'FCT - Abuja';
+      isStateExtractedFromAddress = true;
+    }
+
+    // 2. Check multi-word states (Cross River, Akwa Ibom)
+    if (!state && /\bcross\s*river\b/i.test(lowerAddr)) {
+      state = 'Cross River';
+      isStateExtractedFromAddress = true;
+    }
+    if (!state && /\bakwa\s*[- ]?ibom\b/i.test(lowerAddr)) {
+      state = 'Akwa Ibom';
+      isStateExtractedFromAddress = true;
+    }
+
+    // 3. Check single-word Nigerian states with word boundary
+    if (!state) {
+      for (const ns of NIGERIAN_STATES) {
+        if (ns === 'FCT - Abuja' || ns === 'Cross River' || ns === 'Akwa Ibom') continue;
+        if (ns === 'Niger') {
+          // Strict guard: "Niger" must not match "Nigeria" or "Nigerian"
+          if (/\bniger\b(?!\s*ia|\s*ian)/i.test(lowerAddr)) {
+            state = 'Niger';
+            isStateExtractedFromAddress = true;
+            break;
+          }
+        } else {
+          const stateRegex = new RegExp(`\\b${ns.toLowerCase()}\\b`, 'i');
+          if (stateRegex.test(lowerAddr)) {
+            state = ns;
+            isStateExtractedFromAddress = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // 4. Check major cities/LGAs if explicit state name was absent
+    if (!state) {
+      for (const [cityKey, mappedState] of Object.entries(NIGERIAN_CITY_TO_STATE_MAP)) {
+        const cityRegex = new RegExp(`\\b${cityKey}\\b`, 'i');
+        if (cityRegex.test(lowerAddr)) {
+          state = mappedState;
+          isStateExtractedFromAddress = true;
+          break;
+        }
+      }
+    }
+
+    if (state && !country) {
+      country = 'Nigeria';
+    }
+  }
+
+  // D. Priority d: If state cannot be determined reliably, use "Not specified"
+  // NEVER default to Lagos!
+  // NEVER fabricate a state from an incomplete address!
+  if (!state) {
+    state = 'Not specified';
+  }
+
+  // Final check for Country:
+  // If state is an authoritative Nigerian state, Country = Nigeria
+  // If Country is still empty and not foreign, use 'Not specified' (NEVER automatically force Nigeria)
+  if (!country) {
+    if (NIGERIAN_STATES.includes(state)) {
+      country = 'Nigeria';
+    } else {
+      country = 'Not specified';
+    }
+  }
+
+  // Location / LGA field:
+  const location = rawLocation || rawAddress || (state !== 'Not specified' ? state : country);
+
+  return {
+    country,
+    state,
+    location,
+    isStateExtractedFromAddress,
+    isCountryFromSource,
+    rawAddressPreserved: rawAddress,
+  };
+}
+
 export interface RawHistoricalClientRow {
   fullName: string;
   age?: number | string;
@@ -38,6 +426,8 @@ export interface RawHistoricalClientRow {
   email: string;
   phone?: string;
   address?: string;
+  state?: string;
+  location?: string;
   emergencyContactName?: string;
   emergencyContactPhone?: string;
   country?: string;
@@ -74,23 +464,28 @@ export interface ParsedClientRecord {
     email: string;
     phone: string;
     address: string;
+    state: string;
+    location: string;
+    country: string;
     emergencyContactName: string;
     emergencyContactPhone: string;
-    country: string;
     gamblingExperience: string;
     amountSpentLost: string;
     gamblingTypeNotes: string;
     severity: 'Low' | 'Medium' | 'High';
+    isStateExtractedFromAddress?: boolean;
   };
   isValidEmail: boolean;
   isDuplicate: boolean;
   isAlreadyMigrated: boolean;
+  isExistingClientToUpdate?: boolean;
   existingClientId?: string;
   existingAuthUid?: string;
   duplicateReason?: string;
   missingFields: string[];
   status:
     | 'READY'
+    | 'UPDATE_EXISTING'
     | 'ALREADY_MIGRATED'
     | 'DUPLICATE'
     | 'INVALID_EMAIL'
@@ -108,10 +503,16 @@ export interface PreviewSummary {
   invalidEmails: number;
   missingInfo: number; // Missing Required Data
   alreadyInFirestore: number;
-  alreadyMigrated: number; // e.g. Toba John / GP-0018
+  alreadyMigrated: number; // e.g. Shodipo Ayomide / GP-0017
   potentialDuplicates: number;
-  readyToMigrate: number; // exactly reconciles: total - (alreadyMigrated + duplicates + invalid + missing + review)
+  readyToMigrate: number; // New clients ready to migrate
+  existingToUpdate: number; // Existing clients staged for safe location/historical update
   manualReviewCount: number;
+  nigerianNonLagosCount: number;
+  ghanaCount: number;
+  otherAfricanCountriesCount: number;
+  unknownStateCount: number;
+  addressExtractedStateCount: number;
   excludedRows: ExcludedRowInfo[];
   reconciliation: {
     sourcePhysicalRows: number;
@@ -458,9 +859,14 @@ export class MigrationService {
     const existingAuthUidsMap = new Map<string, Client>();
     const existingNamesMap = new Map<string, Client>();
     const existingIdsMap = new Map<string, Client>();
+    const firestoreEmailCounts = new Map<string, number>();
 
     liveClients.forEach((c) => {
-      if (c.email) existingEmailsMap.set(c.email.toLowerCase().trim(), c);
+      const cleanE = (c.email || '').toLowerCase().trim();
+      if (cleanE) {
+        existingEmailsMap.set(cleanE, c);
+        firestoreEmailCounts.set(cleanE, (firestoreEmailCounts.get(cleanE) || 0) + 1);
+      }
       if (c.authUid) existingAuthUidsMap.set(c.authUid, c);
       if (c.id) existingIdsMap.set(c.id.toLowerCase().trim(), c);
       const fullName = (c.fullName || `${c.firstName} ${c.lastName}`).toLowerCase().trim();
@@ -475,8 +881,14 @@ export class MigrationService {
     let missingInfoCount = 0;
     let alreadyInFirestoreCount = 0;
     let alreadyMigratedCount = 0;
+    let existingToUpdateCount = 0;
     let potentialDuplicatesCount = 0;
     let manualReviewCount = 0;
+    let nigerianNonLagosCount = 0;
+    let ghanaCount = 0;
+    let otherAfricanCountriesCount = 0;
+    let unknownStateCount = 0;
+    let addressExtractedStateCount = 0;
 
     rawDataRows.forEach((rowCells: any[], offset: number) => {
       const physicalRowNumber = headerRowIdx + 2 + offset; // 1-indexed spreadsheet line
@@ -513,9 +925,11 @@ export class MigrationService {
             email: '',
             phone: '',
             address: '',
+            state: 'Not specified',
+            location: 'Not specified',
             emergencyContactName: '',
             emergencyContactPhone: '',
-            country: 'Nigeria',
+            country: 'Not specified',
             gamblingExperience: '',
             amountSpentLost: '',
             gamblingTypeNotes: '',
@@ -524,6 +938,7 @@ export class MigrationService {
           isValidEmail: false,
           isDuplicate: false,
           isAlreadyMigrated: false,
+          isExistingClientToUpdate: false,
           missingFields: ['Full Name', 'Email', 'Phone', 'Age', 'Address'],
           status: 'MISSING_REQUIRED_DATA',
           duplicateReason: `Spreadsheet physical row ${physicalRowNumber} contains no cell values (blank row).`,
@@ -573,10 +988,13 @@ export class MigrationService {
       const genderRaw = getVal(['Gender', 'Sex']);
       const emailRaw = getVal(['Email', 'Email Address', 'Client Email', 'E-mail', 'Mail', 'User Email']);
       const phoneRaw = getVal(['Phone', 'Phone Number', 'Telephone', 'Mobile', 'Mobile Number', 'Contact Number', 'Tel']);
-      const addressRaw = getVal(['Address', 'Residential Address', 'Location', 'City', 'State', 'Residence', 'Home Address']);
+      // Distinct Address, State, Location (LGA/City), and Country lookups
+      const addressRaw = getVal(['Address', 'Residential Address', 'Home Address', 'Street Address', 'Residential', 'Residence', 'Street']);
+      const stateRaw = getVal(['State', 'State of Residence', 'State / Province', 'State/Province', 'Province', 'Region', 'State/Region']);
+      const locationRaw = getVal(['City', 'LGA', 'Local Government', 'Town', 'Location', 'Area', 'Municipality']);
+      const countryRaw = getVal(['Country', 'Nationality', 'Nation', 'Country of Residence', 'Country/Region']);
       const emergencyNameRaw = getVal(['Emergency Contact Name', 'Emergency Contact', 'Emergency Name', 'Next of Kin', 'Next of Kin Name', 'NOK Name']);
       const emergencyPhoneRaw = getVal(['Emergency Contact Number', 'Emergency Phone', 'Emergency Number', 'Emergency Contact Phone', 'Next of Kin Phone', 'NOK Phone']);
-      const countryRaw = getVal(['Country', 'Nationality', 'Nation']) || 'Nigeria';
       const gamblingExperienceRaw = getVal(['Gambling Experience', 'Years of Gambling', 'Length of Gambling', 'Duration of Gambling', 'Experience']);
       const amountSpentLostRaw = getVal(['Amount Spent/Lost', 'Amount Spent', 'Amount Lost', 'Money Spent', 'Estimated Loss', 'Loss', 'Total Spent', 'Amount']);
       const gamblingTypeNotesRaw = getVal(['Gambling Type / Major Notes', 'Gambling Type', 'Major Notes', 'Notes', 'Gambling Types', 'Type of Gambling', 'Remarks']);
@@ -585,6 +1003,9 @@ export class MigrationService {
       const cleanEmail = emailRaw.toLowerCase().trim();
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       const isValidEmail = Boolean(cleanEmail && emailRegex.test(cleanEmail));
+
+      // Resolve Country, State, and Location according to authoritative Location Rules
+      const resolvedLocation = resolveCountryAndState(countryRaw, stateRaw, addressRaw, locationRaw);
 
       // Capture unparsed rows with missing name and email without dropping them
       if (!fullName && !cleanEmail) {
@@ -618,18 +1039,22 @@ export class MigrationService {
             gender: 'Prefer not to say',
             email: '',
             phone: phoneRaw || '',
-            address: addressRaw || '',
+            address: resolvedLocation.rawAddressPreserved,
+            state: resolvedLocation.state,
+            location: resolvedLocation.location,
             emergencyContactName: emergencyNameRaw || '',
             emergencyContactPhone: emergencyPhoneRaw || '',
-            country: countryRaw,
+            country: resolvedLocation.country,
             gamblingExperience: gamblingExperienceRaw,
             amountSpentLost: amountSpentLostRaw,
             gamblingTypeNotes: gamblingTypeNotesRaw,
             severity: 'Low',
+            isStateExtractedFromAddress: resolvedLocation.isStateExtractedFromAddress,
           },
           isValidEmail: false,
           isDuplicate: false,
           isAlreadyMigrated: false,
+          isExistingClientToUpdate: false,
           missingFields: ['Full Name', 'Email'],
           status: 'MISSING_REQUIRED_DATA',
           duplicateReason: `Row ${physicalRowNumber} contains data [${rawSnippet}] but lacks Full Name and Email Address.`,
@@ -647,6 +1072,7 @@ export class MigrationService {
 
       let isDuplicate = false;
       let isAlreadyMigrated = false;
+      let isExistingClientToUpdate = false;
       let existingClientId: string | undefined;
       let existingAuthUid: string | undefined;
       let duplicateReason: string | undefined;
@@ -670,34 +1096,57 @@ export class MigrationService {
         existingNamesMap.get('ayomide shodipo') ||
         (cleanEmail && cleanEmail.includes('shodipo') ? existingEmailsMap.get(cleanEmail) : undefined);
 
-      // Verify previous test client Toba John / GP-0018 in live Firestore
-      const tobaInFirestore =
-        existingIdsMap.get('gp-0018') ||
-        existingNamesMap.get('toba john') ||
-        (cleanEmail && cleanEmail.includes('toba') ? existingEmailsMap.get(cleanEmail) : undefined);
+      // Verify matching live Firestore records for Toba John
+      const tobaMatchesInFirestore = liveClients.filter((c) => {
+        const cNormName = (c.fullName || `${c.firstName} ${c.lastName}`).toLowerCase().trim();
+        const cNormEmail = (c.email || '').toLowerCase().trim();
+        return (
+          c.id.toUpperCase() === 'GP-0018' ||
+          (cleanEmail && cNormEmail === cleanEmail) ||
+          (normFullName && cNormName === normFullName)
+        );
+      });
 
       if (isShodipoRow && shodipoInFirestore) {
         existingClientId = shodipoInFirestore.id || 'GP-0017';
         existingAuthUid = shodipoInFirestore.authUid;
         isAlreadyMigrated = true;
-        duplicateReason = `Legitimate existing client in Cloud Firestore (Client ID: ${existingClientId} — Shodipo Ayomide). Excluded from migration queue to preserve existing client record.`;
+        duplicateReason = `Legitimate verified existing client in Cloud Firestore (Client ID: ${existingClientId} — Shodipo Ayomide). Excluded from migration queue to preserve existing client record.`;
         alreadyMigratedCount++;
         alreadyInFirestoreCount++;
-      } else if (isTobaJohnRow && tobaInFirestore) {
-        existingClientId = tobaInFirestore.id || 'GP-0018';
-        existingAuthUid = tobaInFirestore.authUid;
+      } else if (isTobaJohnRow && tobaMatchesInFirestore.length > 1) {
+        // GENUINE DUPLICATE: Multiple conflicting records exist in Cloud Firestore for Toba John
+        existingClientId = tobaMatchesInFirestore[0].id;
+        existingAuthUid = tobaMatchesInFirestore[0].authUid;
         isDuplicate = true;
-        duplicateReason = `Test/Duplicate record in Cloud Firestore (Client ID: ${existingClientId} — Toba John from previous test). Excluded from migration queue; flagged for Duplicate Review.`;
+        duplicateReason = `Genuinely Ambiguous Duplicate in Cloud Firestore: Multiple conflicting records found for Toba John (${tobaMatchesInFirestore.map((m) => m.id).join(', ')}). Excluded from automatic migration update to prevent clinical data corruption.`;
         potentialDuplicatesCount++;
+        alreadyInFirestoreCount += tobaMatchesInFirestore.length;
+      } else if (isTobaJohnRow && tobaMatchesInFirestore.length === 1) {
+        // SINGLE UNAMBIGUOUS EXISTING RECORD: Safely update existing record (preserving GP-0018 / ID and clinical data)
+        const singleMatch = tobaMatchesInFirestore[0];
+        existingClientId = singleMatch.id;
+        existingAuthUid = singleMatch.authUid;
+        isExistingClientToUpdate = true;
+        duplicateReason = `Legitimate existing client in Cloud Firestore (Client ID: ${singleMatch.id}). Staged for safe location and source data update without duplicating record (clinical history and GP-0018 preserved).`;
         alreadyInFirestoreCount++;
+        existingToUpdateCount++;
+      } else if (cleanEmail && (firestoreEmailCounts.get(cleanEmail) || 0) > 1) {
+        // Ambiguous duplicate email across multiple Firestore records
+        isDuplicate = true;
+        duplicateReason = `Ambiguous Duplicate in Cloud Firestore: Multiple client records share email (${cleanEmail}). Excluded from automatic migration update.`;
+        potentialDuplicatesCount++;
+        alreadyInFirestoreCount += firestoreEmailCounts.get(cleanEmail) || 0;
       } else if (cleanEmail && existingEmailsMap.has(cleanEmail)) {
+        // MATCHING EXISTING HISTORICAL CLIENT IN FIRESTORE
+        // Identified for safe re-migration update without duplicating client!
         const match = existingEmailsMap.get(cleanEmail)!;
         existingClientId = match.id;
         existingAuthUid = match.authUid;
-        isDuplicate = true;
-        duplicateReason = `Existing client record in Cloud Firestore (Client ID: ${match.id})`;
+        isExistingClientToUpdate = true;
+        duplicateReason = `Existing client record in Cloud Firestore (Client ID: ${match.id}). Staged for safe location and source data update without duplicating record.`;
         alreadyInFirestoreCount++;
-        potentialDuplicatesCount++;
+        existingToUpdateCount++;
       } else if (cleanEmail && seenInFileEmails.has(cleanEmail)) {
         isDuplicate = true;
         duplicateReason = 'Duplicate email within uploaded source file';
@@ -717,6 +1166,8 @@ export class MigrationService {
       let status: ParsedClientRecord['status'] = 'READY';
       if (isAlreadyMigrated) {
         status = 'ALREADY_MIGRATED';
+      } else if (isExistingClientToUpdate) {
+        status = 'UPDATE_EXISTING';
       } else if (missingFields.includes('Full Name') || missingFields.includes('Email')) {
         status = 'MISSING_REQUIRED_DATA';
         missingInfoCount++;
@@ -727,6 +1178,27 @@ export class MigrationService {
       } else if (missingFields.length > 0) {
         status = 'INCOMPLETE';
         missingInfoCount++;
+      }
+
+      // Track location metrics for validation preview
+      if (
+        resolvedLocation.country === 'Nigeria' &&
+        resolvedLocation.state !== 'Lagos' &&
+        resolvedLocation.state !== 'Not specified'
+      ) {
+        nigerianNonLagosCount++;
+      }
+      if (resolvedLocation.country === 'Ghana') {
+        ghanaCount++;
+      }
+      if (resolvedLocation.country === 'Other African Countries') {
+        otherAfricanCountriesCount++;
+      }
+      if (resolvedLocation.state === 'Not specified') {
+        unknownStateCount++;
+      }
+      if (resolvedLocation.isStateExtractedFromAddress) {
+        addressExtractedStateCount++;
       }
 
       const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
@@ -757,6 +1229,8 @@ export class MigrationService {
         email: cleanEmail,
         phone: phoneRaw,
         address: addressRaw,
+        state: stateRaw,
+        location: locationRaw,
         emergencyContactName: emergencyNameRaw,
         emergencyContactPhone: emergencyPhoneRaw,
         country: countryRaw,
@@ -777,18 +1251,22 @@ export class MigrationService {
           gender: parsedGender,
           email: cleanEmail,
           phone: phoneRaw || '+234 800 000 0000',
-          address: addressRaw,
+          address: resolvedLocation.rawAddressPreserved,
+          state: resolvedLocation.state,
+          location: resolvedLocation.location,
+          country: resolvedLocation.country,
           emergencyContactName: emergencyNameRaw,
           emergencyContactPhone: emergencyPhoneRaw,
-          country: countryRaw,
           gamblingExperience: gamblingExperienceRaw,
           amountSpentLost: amountSpentLostRaw,
           gamblingTypeNotes: gamblingTypeNotesRaw,
           severity: parsedSeverity,
+          isStateExtractedFromAddress: resolvedLocation.isStateExtractedFromAddress,
         },
         isValidEmail,
         isDuplicate,
         isAlreadyMigrated,
+        isExistingClientToUpdate,
         existingClientId,
         existingAuthUid,
         duplicateReason,
@@ -798,6 +1276,7 @@ export class MigrationService {
     });
 
     const readyToMigrateCount = parsedRecords.filter((r) => r.status === 'READY').length;
+    existingToUpdateCount = parsedRecords.filter((r) => r.status === 'UPDATE_EXISTING').length;
 
     // Build complete excluded rows list for full reconciliation transparency
     const completeExcludedList: ExcludedRowInfo[] = [...excludedRows];
@@ -863,7 +1342,7 @@ export class MigrationService {
 
     const excludedCount = completeExcludedList.length;
 
-    const reconciliationEquation = `Source Client Rows (${physicalSourceCount}) = Ready (${readyToMigrateCount}) + Already Migrated (${alreadyMigratedCount}) + Duplicates (${potentialDuplicatesCount}) + Invalid/Incomplete (${invalidEmails + missingInfoCount}) = Parsed (${parsedRecords.length})`;
+    const reconciliationEquation = `Source Client Rows (${physicalSourceCount}) = Ready (${readyToMigrateCount}) + Existing to Update (${existingToUpdateCount}) + Already Migrated (${alreadyMigratedCount}) + Duplicates (${potentialDuplicatesCount}) + Invalid/Incomplete (${invalidEmails + missingInfoCount}) = Parsed (${parsedRecords.length})`;
 
     const summary: PreviewSummary = {
       totalSourceRows: physicalSourceCount,
@@ -877,12 +1356,18 @@ export class MigrationService {
       alreadyMigrated: alreadyMigratedCount,
       potentialDuplicates: potentialDuplicatesCount,
       readyToMigrate: readyToMigrateCount,
+      existingToUpdate: existingToUpdateCount,
       manualReviewCount,
+      nigerianNonLagosCount,
+      ghanaCount,
+      otherAfricanCountriesCount,
+      unknownStateCount,
+      addressExtractedStateCount,
       excludedRows: completeExcludedList,
       reconciliation: {
         sourcePhysicalRows: physicalSourceCount,
         parsedRows: parsedRecords.length,
-        validRows: readyToMigrateCount,
+        validRows: readyToMigrateCount + existingToUpdateCount,
         excludedRows: excludedCount,
         missingUnparsedRows: unparsedList.length,
         unparsedList,
@@ -1388,9 +1873,9 @@ export class MigrationService {
         phone: clientRecord.cleaned.phone,
         email: clientRecord.cleaned.email,
         address: clientRecord.cleaned.address || '',
-        state: 'Lagos',
-        location: clientRecord.cleaned.address || 'Nigeria',
-        country: clientRecord.cleaned.country || 'Nigeria',
+        state: clientRecord.cleaned.state,
+        location: clientRecord.cleaned.location || clientRecord.cleaned.address || clientRecord.cleaned.state,
+        country: clientRecord.cleaned.country,
         occupation: 'Not specified',
         maritalStatus: 'Other',
         howHeard: 'Historical Outreach / Direct Intake',
@@ -1607,41 +2092,119 @@ export class MigrationService {
     const normName = clientRecord.cleaned.fullName.toLowerCase().trim();
     const cleanEmail = clientRecord.cleaned.email.toLowerCase().trim();
 
-    // Check Shodipo Ayomide / GP-0017 / GP-0018
+    // Check Shodipo Ayomide / GP-0017 (Already Migrated)
     if (
+      clientRecord.status === 'ALREADY_MIGRATED' ||
       clientRecord.isAlreadyMigrated ||
-      clientRecord.existingClientId === 'GP-0018' ||
-      clientRecord.existingClientId === 'GP-0017' ||
       normName === 'shodipo ayomide' ||
       normName === 'ayomide shodipo' ||
       cleanEmail.includes('shodipo')
     ) {
-      await notifyStep('Already migrated in test (Shodipo Ayomide / GP-0017). Skipped safely.', 1, 1);
+      await notifyStep('Already migrated (Shodipo Ayomide / GP-0017). Skipped safely.', 1, 1);
       return {
         rowIndex: clientRecord.rowIndex,
         name: clientRecord.cleaned.fullName,
         email: cleanEmail,
         clientId: clientRecord.existingClientId || 'GP-0017',
         status: 'ALREADY_MIGRATED',
-        reason: 'Already migrated (Shodipo Ayomide / GP-0017). Test record GP-0018 removed. Skipped safely.',
+        reason: 'Already migrated (Shodipo Ayomide / GP-0017). Skipped safely.',
       };
     }
 
-    // Live Firestore duplicate check
-    await notifyStep('Checking live Cloud Firestore duplicate state...', 1, 12);
+    // SAFE RE-MIGRATION / UPDATE OF EXISTING CLIENT RECORD:
+    // Strictly updates only intended location/source fields without creating duplicate clients or resetting Auth/assessments
+    if (clientRecord.status === 'UPDATE_EXISTING' || clientRecord.isExistingClientToUpdate) {
+      await notifyStep('Locating existing client in Cloud Firestore for safe update...', 1, 12);
+      if (db && isFirebaseConfigured) {
+        try {
+          let existingDocSnap = clientRecord.existingClientId
+            ? await getDoc(doc(db, 'clients', clientRecord.existingClientId))
+            : null;
+
+          if (!existingDocSnap || !existingDocSnap.exists()) {
+            const q = query(collection(db, 'clients'), where('email', '==', cleanEmail));
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              existingDocSnap = snap.docs[0];
+            }
+          }
+
+          if (existingDocSnap && existingDocSnap.exists()) {
+            const existingData = existingDocSnap.data() as Client;
+            const existingClientId = existingDocSnap.id;
+
+            await notifyStep(`Safely updating existing Client record in Cloud Firestore (${existingClientId})...`, 4, 12);
+            const updatePayload: Partial<Client> = {
+              address: clientRecord.cleaned.address || existingData.address || '',
+              state: clientRecord.cleaned.state,
+              location: clientRecord.cleaned.location || clientRecord.cleaned.address || clientRecord.cleaned.state,
+              country: clientRecord.cleaned.country,
+            };
+
+            await setDoc(doc(db, 'clients', existingClientId), cleanForFirestore(updatePayload), { merge: true });
+
+            return {
+              rowIndex: clientRecord.rowIndex,
+              name: clientRecord.cleaned.fullName,
+              email: cleanEmail,
+              clientId: existingClientId,
+              firebaseUid: existingData.authUid,
+              status: 'SUCCESS',
+              reason: `Safely updated existing client (${existingClientId}) location: State: "${clientRecord.cleaned.state}", Country: "${clientRecord.cleaned.country}" (clinical history preserved).`,
+            };
+          } else {
+            return {
+              rowIndex: clientRecord.rowIndex,
+              name: clientRecord.cleaned.fullName,
+              email: cleanEmail,
+              status: 'CLIENT_WRITE_FAILED',
+              reason: `Existing client record (${clientRecord.existingClientId || cleanEmail}) could not be located in Firestore for safe update.`,
+            };
+          }
+        } catch (e: any) {
+          console.warn('[MigrationService] Safe update notice:', e);
+          return {
+            rowIndex: clientRecord.rowIndex,
+            name: clientRecord.cleaned.fullName,
+            email: cleanEmail,
+            status: 'CLIENT_WRITE_FAILED',
+            reason: `Firestore client update rejected: ${e?.message || e}`,
+          };
+        }
+      }
+    }
+
+    // Live Firestore duplicate/existing client check (fallback defense-in-depth)
+    await notifyStep('Checking live Cloud Firestore state for existing record...', 1, 12);
     if (db && isFirebaseConfigured) {
       try {
         const q = query(collection(db, 'clients'), where('email', '==', cleanEmail));
         const snap = await getDocs(q);
         if (!snap.empty) {
           const existingDoc = snap.docs[0];
+          const existingData = existingDoc.data() as Client;
+          const existingClientId = existingDoc.id;
+
+          // SAFE RE-MIGRATION / UPDATE OF EXISTING CLIENT RECORD:
+          // Strictly updates only intended location/source fields without creating duplicate clients or resetting Auth/assessments
+          await notifyStep(`Safely updating existing Client record in Cloud Firestore (${existingClientId})...`, 4, 12);
+          const updatePayload: Partial<Client> = {
+            address: clientRecord.cleaned.address || existingData.address || '',
+            state: clientRecord.cleaned.state,
+            location: clientRecord.cleaned.location || clientRecord.cleaned.address || clientRecord.cleaned.state,
+            country: clientRecord.cleaned.country,
+          };
+
+          await setDoc(doc(db, 'clients', existingClientId), cleanForFirestore(updatePayload), { merge: true });
+
           return {
             rowIndex: clientRecord.rowIndex,
             name: clientRecord.cleaned.fullName,
             email: cleanEmail,
-            clientId: existingDoc.id,
-            status: 'DUPLICATE',
-            reason: `Existing client (${existingDoc.id}) already registered in Firestore. Skipped safely.`,
+            clientId: existingClientId,
+            firebaseUid: existingData.authUid,
+            status: 'SUCCESS',
+            reason: `Safely updated existing client (${existingClientId}) location: State: "${clientRecord.cleaned.state}", Country: "${clientRecord.cleaned.country}" (clinical history preserved).`,
           };
         }
       } catch (e) {
@@ -1705,9 +2268,9 @@ export class MigrationService {
       phone: clientRecord.cleaned.phone,
       email: cleanEmail,
       address: clientRecord.cleaned.address || '',
-      state: 'Lagos',
-      location: clientRecord.cleaned.address || 'Nigeria',
-      country: clientRecord.cleaned.country || 'Nigeria',
+      state: clientRecord.cleaned.state,
+      location: clientRecord.cleaned.location || clientRecord.cleaned.address || clientRecord.cleaned.state,
+      country: clientRecord.cleaned.country,
       occupation: 'Not specified',
       maritalStatus: 'Other',
       howHeard: 'Historical Outreach / Direct Intake',
@@ -1933,8 +2496,12 @@ export class MigrationService {
     let consecutiveSystemicFailures = 0;
 
     const runId = `mig-run-${Date.now()}`;
-    const eligibleRecords = records.filter((r) => r.status === 'READY');
-    const recordsToProcess = eligibleRecords.length > 0 ? eligibleRecords : records;
+    // Full Migration eligibility: strictly READY (new clients) and UPDATE_EXISTING (safe location/source update)
+    // Strictly excludes ALREADY_MIGRATED, DUPLICATE, INVALID_EMAIL, MISSING_REQUIRED_DATA, INCOMPLETE
+    const eligibleRecords = records.filter(
+      (r) => r.status === 'READY' || r.status === 'UPDATE_EXISTING'
+    );
+    const recordsToProcess = eligibleRecords;
     const totalToProcess = recordsToProcess.length;
 
     for (let i = 0; i < recordsToProcess.length; i++) {

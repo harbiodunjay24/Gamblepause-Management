@@ -2259,30 +2259,107 @@ class DataService {
     notificationId: string;
     clientId: string;
     counsellorId: string;
-  }): Promise<{ success: boolean; message?: string; error?: string }> {
+  }): Promise<{ success: boolean; stage?: string; message?: string; error?: string }> {
+    console.log(`[Email Dispatch] Started email dispatch for client: "${payload.clientId}", counsellor: "${payload.counsellorId}", notif: "${payload.notificationId}"`);
+
     try {
+      // 1. Ensure Firebase Auth state is ready if SDK provides authStateReady
+      if (auth && typeof (auth as any).authStateReady === 'function') {
+        try {
+          await (auth as any).authStateReady();
+        } catch (e) {
+          console.warn('[Email Dispatch] authStateReady resolution notice:', e);
+        }
+      }
+
+      let fbUser = auth?.currentUser;
+
+      // If auth.currentUser is not yet populated, give it a short grace period
+      if (!fbUser) {
+        console.warn('[Email Dispatch] auth.currentUser is null on first check. Awaiting brief tick for session restore...');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        fbUser = auth?.currentUser;
+      }
+
       let idToken = '';
-      if (auth && auth.currentUser) {
-        idToken = await auth.currentUser.getIdToken();
+      if (fbUser) {
+        try {
+          idToken = await fbUser.getIdToken();
+          console.log('[Email Dispatch] Firebase ID token successfully obtained for user UID:', fbUser.uid);
+        } catch (tokenErr: any) {
+          console.error('[Email Dispatch] Failed to retrieve Firebase ID token:', tokenErr?.message || tokenErr);
+        }
+      } else {
+        console.warn('[Email Dispatch] auth.currentUser is still null. Cannot obtain ID token for serverless API.');
+        return {
+          success: false,
+          stage: 'client_auth',
+          error: 'No active Firebase Auth user session found in browser. Email API was not called.',
+        };
       }
 
       if (!idToken) {
-        console.warn('[Email Dispatch] No active Firebase Auth ID token available.');
-        return { success: false, error: 'No authenticated Firebase user found.' };
+        console.warn('[Email Dispatch] Firebase ID token is empty. Aborting serverless email call.');
+        return {
+          success: false,
+          stage: 'client_auth',
+          error: 'Empty Firebase ID token. Aborting email dispatch.',
+        };
       }
 
-      const response = await fetch('/api/notifications/send-counsellor-email', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      // 2. Dispatch request to Vercel Serverless Function
+      const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+      const primaryApiUrl = `${baseUrl}/api/notifications/send-counsellor-email`;
+      console.log(`[Email Dispatch] Sending POST request to primary endpoint: ${primaryApiUrl}`);
+
+      let response: Response;
+      try {
+        response = await fetch(primaryApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (fetchErr: any) {
+        console.error(`[Email Dispatch] Network fetch failed to ${primaryApiUrl}:`, fetchErr?.message || fetchErr);
+        return {
+          success: false,
+          stage: 'network_fetch',
+          error: `Network error connecting to email API: ${fetchErr?.message || fetchErr}`,
+        };
+      }
+
+      console.log(`[Email Dispatch] Primary endpoint response status: ${response.status} ${response.statusText}`);
+
+      // 3. If primary route returns 404 (e.g. Vercel flat routing fallback), attempt root alias route
+      if (response.status === 404) {
+        const fallbackApiUrl = `${baseUrl}/api/send-counsellor-email`;
+        console.warn(`[Email Dispatch] ${primaryApiUrl} returned 404. Attempting fallback route: ${fallbackApiUrl}`);
+        try {
+          const fallbackRes = await fetch(fallbackApiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify(payload),
+          });
+          console.log(`[Email Dispatch] Fallback endpoint response status: ${fallbackRes.status} ${fallbackRes.statusText}`);
+          if (fallbackRes.status !== 404) {
+            response = fallbackRes;
+          }
+        } catch (fallbackErr: any) {
+          console.warn('[Email Dispatch] Fallback route network notice:', fallbackErr?.message || fallbackErr);
+        }
+      }
 
       const result = await response.json().catch(() => ({}));
+      console.log('[Email Dispatch] Serverless API response payload:', result);
+
       if (response.ok && result.success) {
-        console.log(`[Email Dispatch] Successfully dispatched assignment email for client ${payload.clientId} to counsellor ${payload.counsellorId}`);
+        console.log(`[Email Dispatch] Successfully confirmed email dispatch for client ${payload.clientId} (stage: ${result.stage || 'dispatched'})`);
         // Record emailStatus in local memory and storage
         const notif = this.notifications.find((n) => n.id === payload.notificationId);
         if (notif) {
@@ -2290,14 +2367,125 @@ class DataService {
           notif.emailSentAt = new Date().toISOString();
           this.saveToStorage();
         }
-        return { success: true, message: result.message };
+        return {
+          success: true,
+          stage: result.stage || 'dispatched',
+          message: result.message,
+        };
       } else {
-        console.warn('[Email Dispatch] Notice from email server:', result.error || response.statusText);
-        return { success: false, error: result.error || response.statusText };
+        console.warn(`[Email Dispatch] Email API returned error (HTTP ${response.status}, stage: ${result.stage || 'unknown'}):`, result.error || response.statusText);
+        return {
+          success: false,
+          stage: result.stage || 'server_error',
+          error: result.error || `HTTP ${response.status}: ${response.statusText}`,
+        };
       }
     } catch (err: any) {
-      console.warn('[Email Dispatch] Network notice dispatching counsellor email:', err?.message || err);
-      return { success: false, error: err?.message || 'Network error' };
+      console.error('[Email Dispatch] Unhandled exception during email dispatch:', err?.message || err);
+      return {
+        success: false,
+        stage: 'client_exception',
+        error: err?.message || 'Unexpected dispatch error',
+      };
+    }
+  }
+
+  /**
+   * Diagnostic method for Super Admins to verify Vercel serverless email transport independently
+   */
+  public async testCounsellorEmailTransport(): Promise<{
+    success: boolean;
+    stage?: string;
+    message?: string;
+    error?: string;
+    httpStatus?: number;
+  }> {
+    console.log('[Email Diagnostic] Starting independent SMTP transport verification...');
+
+    if (auth && typeof (auth as any).authStateReady === 'function') {
+      try {
+        await (auth as any).authStateReady();
+      } catch (e) {
+        console.warn('[Email Diagnostic] authStateReady resolution notice:', e);
+      }
+    }
+
+    let fbUser = auth?.currentUser;
+    if (!fbUser) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      fbUser = auth?.currentUser;
+    }
+
+    if (!fbUser) {
+      console.warn('[Email Diagnostic] No active Firebase Auth user found in browser.');
+      return {
+        success: false,
+        stage: 'client_auth',
+        error: 'No active Firebase Auth user session found in browser. Please sign in as Super Admin.',
+      };
+    }
+
+    let idToken = '';
+    try {
+      idToken = await fbUser.getIdToken();
+    } catch (tokenErr: any) {
+      return {
+        success: false,
+        stage: 'client_auth',
+        error: `Failed to retrieve Firebase ID token: ${tokenErr?.message || tokenErr}`,
+      };
+    }
+
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    const primaryApiUrl = `${baseUrl}/api/notifications/send-counsellor-email`;
+    console.log(`[Email Diagnostic] Testing primary endpoint: ${primaryApiUrl}`);
+
+    try {
+      let response = await fetch(primaryApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ isTest: true }),
+      });
+
+      console.log(`[Email Diagnostic] Primary endpoint status: ${response.status} ${response.statusText}`);
+
+      if (response.status === 404) {
+        const fallbackApiUrl = `${baseUrl}/api/send-counsellor-email`;
+        console.warn(`[Email Diagnostic] 404 received. Testing fallback endpoint: ${fallbackApiUrl}`);
+        const fallbackRes = await fetch(fallbackApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ isTest: true }),
+        });
+        console.log(`[Email Diagnostic] Fallback endpoint status: ${fallbackRes.status} ${fallbackRes.statusText}`);
+        if (fallbackRes.status !== 404) {
+          response = fallbackRes;
+        }
+      }
+
+      const result = await response.json().catch(() => ({}));
+      console.log('[Email Diagnostic] Diagnostic response payload:', result);
+
+      return {
+        success: response.ok && result.success,
+        stage: result.stage,
+        message: result.message,
+        error: result.error,
+        httpStatus: response.status,
+      };
+    } catch (err: any) {
+      console.error('[Email Diagnostic] Network exception during transport test:', err);
+      return {
+        success: false,
+        stage: 'network_fetch',
+        error: `Network error: ${err?.message || err}`,
+      };
     }
   }
 
@@ -3198,7 +3386,7 @@ class DataService {
   }
 
   // --- High Level Metrics Isolated By Role ---
-  public getDashboardMetrics() {
+  public getDashboardMetrics(providedClients?: Client[]) {
     const user = authService.getCurrentUser();
     if (!user || user.role === 'Client') {
       return {
@@ -3212,8 +3400,9 @@ class DataService {
       };
     }
 
-    // Counsellor metrics are computed strictly on their assigned caseload
-    const clientPool = this.getClients();
+    // If providedClients is passed (e.g. from active filters in Admin Dashboard), compute metrics on that pool.
+    // Otherwise, default to role-authorized caseload.
+    const clientPool = providedClients !== undefined ? providedClients : this.getClients();
     const clientIds = new Set(clientPool.map((c) => c.id));
     const submissionPool = this.submissions.filter((s) => clientIds.has(s.clientId));
 

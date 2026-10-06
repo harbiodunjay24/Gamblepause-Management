@@ -290,7 +290,12 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
                 <span>•</span>
                 <span className="flex items-center gap-1">
                   <MapPin className="w-3 h-3 text-red-500" />
-                  {client.location}, {client.state}
+                  {client.location ? `${client.location}, ` : ''}{client.state}
+                  {client.country && client.country !== 'Nigeria' && (
+                    <span className="font-bold text-amber-800 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200 ml-1 text-[11px]">
+                      {client.country}
+                    </span>
+                  )}
                 </span>
               </div>
             </div>

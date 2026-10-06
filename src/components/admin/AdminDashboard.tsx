@@ -34,8 +34,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [dateRange, setDateRange] = useState<'all' | '7d' | '30d' | '90d'>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedCounsellor, setSelectedCounsellor] = useState<string>('all');
+  const [selectedCountry, setSelectedCountry] = useState<string>('all');
   const [selectedState, setSelectedState] = useState<string>('all');
   const [selectedGender, setSelectedGender] = useState<string>('all');
+  const [selectedRiskLevel, setSelectedRiskLevel] = useState<string>('all');
   const [scanResult, setScanResult] = useState<string | null>(null);
 
   // Live real-time subscription for Firestore client records
@@ -50,21 +52,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const isLoaded = dataService.isAuthoritativeLoaded();
   const rawClients = dataService.getClients();
   const staff = dataService.getStaff();
-  const metrics = dataService.getDashboardMetrics();
 
-  // Filter clients based on user controls
+  // Dynamically extract available countries from the dataset
+  const availableCountries = useMemo(() => {
+    const set = new Set<string>();
+    rawClients.forEach((c) => {
+      if (c.country && c.country !== 'Not specified') {
+        set.add(c.country);
+      }
+    });
+    // Ensure standard baseline options exist
+    set.add('Nigeria');
+    set.add('Ghana');
+    set.add('Other African Countries');
+    return Array.from(set).sort();
+  }, [rawClients]);
+
+  // Dynamically extract available states for the selected country
+  const availableStates = useMemo(() => {
+    const set = new Set<string>();
+    const countryClients = selectedCountry === 'all'
+      ? rawClients
+      : rawClients.filter((c) => {
+          const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
+          return cCountry.toLowerCase() === selectedCountry.toLowerCase();
+        });
+
+    countryClients.forEach((c) => {
+      if (c.state && c.state !== 'Not specified') {
+        set.add(c.state);
+      }
+    });
+
+    if (selectedCountry === 'Nigeria' || selectedCountry === 'all') {
+      NIGERIAN_STATES.forEach((s) => set.add(s));
+    }
+    set.add('Not specified');
+    return Array.from(set).sort((a, b) => {
+      if (a === 'Not specified') return 1;
+      if (b === 'Not specified') return -1;
+      return a.localeCompare(b);
+    });
+  }, [rawClients, selectedCountry]);
+
+  // Filter clients based on user controls using strict AND logic
   const filteredClients = useMemo(() => {
     return rawClients.filter((c) => {
-      // Counsellor role limitation: counsellors see all or assigned clients
+      // Counsellor role limitation: counsellors see assigned clients only
       if (currentUser.role === 'Counsellor' && c.assignedCounsellorId !== currentUser.id) {
-        // Counsellors can see assigned primarily, but let's allow filter
+        return false;
       }
 
-      if (selectedStatus !== 'all' && c.status !== selectedStatus) return false;
-      if (selectedCounsellor !== 'all' && c.assignedCounsellorId !== selectedCounsellor) return false;
-      if (selectedState !== 'all' && c.state !== selectedState) return false;
-      if (selectedGender !== 'all' && c.gender !== selectedGender) return false;
+      // 1. Country filter (AND logic)
+      if (selectedCountry !== 'all') {
+        const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
+        if (cCountry.toLowerCase() !== selectedCountry.toLowerCase()) {
+          return false;
+        }
+      }
 
+      // 2. State filter (AND logic)
+      if (selectedState !== 'all') {
+        const cState = c.state || 'Not specified';
+        if (cState.toLowerCase() !== selectedState.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // 3. Status filter (AND logic)
+      if (selectedStatus !== 'all' && c.status !== selectedStatus) {
+        return false;
+      }
+
+      // 4. Counsellor filter (AND logic)
+      if (selectedCounsellor !== 'all' && c.assignedCounsellorId !== selectedCounsellor) {
+        return false;
+      }
+
+      // 5. Gender filter (AND logic)
+      if (selectedGender !== 'all' && c.gender !== selectedGender) {
+        return false;
+      }
+
+      // 6. Risk Level filter (AND logic)
+      if (selectedRiskLevel !== 'all' && c.riskLevel !== selectedRiskLevel) {
+        return false;
+      }
+
+      // 7. Timeframe filter (AND logic)
       if (dateRange !== 'all') {
         const regTime = new Date(c.registrationDate).getTime();
         const now = new Date().getTime();
@@ -76,37 +151,82 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       return true;
     });
-  }, [rawClients, currentUser, selectedStatus, selectedCounsellor, selectedState, selectedGender, dateRange]);
+  }, [
+    rawClients,
+    currentUser,
+    selectedCountry,
+    selectedState,
+    selectedStatus,
+    selectedCounsellor,
+    selectedGender,
+    selectedRiskLevel,
+    dateRange,
+  ]);
 
-  // Funnel calculations
+  // Compute dashboard metrics dynamically from the filtered client dataset
+  const metrics = useMemo(() => {
+    return dataService.getDashboardMetrics(filteredClients);
+  }, [filteredClients]);
+
+  // Funnel calculations derived directly from filteredClients
   const stageCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      'Client Registration': rawClients.length,
-      'Assessment 1.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 1).length,
-      'Assessment 2.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 2).length,
-      'Assessment 3.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 3).length,
-      'Assessment 4.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 4).length,
-      'Assessment 5.0': rawClients.filter((c) => c.totalAssessmentsCompleted >= 5).length,
-      'Client Feedback': rawClients.filter((c) => c.totalAssessmentsCompleted >= 6).length,
+    return {
+      'Client Registration': filteredClients.length,
+      'Assessment 1.0': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 1).length,
+      'Assessment 2.0': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 2).length,
+      'Assessment 3.0': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 3).length,
+      'Assessment 4.0': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 4).length,
+      'Assessment 5.0': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 5).length,
+      'Client Feedback': filteredClients.filter((c) => c.totalAssessmentsCompleted >= 6).length,
     };
-    return counts;
-  }, [rawClients]);
+  }, [filteredClients]);
 
-  // Demographic state calculations
+  // Demographic state calculations derived directly from filteredClients
   const stateCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    rawClients.forEach((c) => {
-      counts[c.state] = (counts[c.state] || 0) + 1;
+    filteredClients.forEach((c) => {
+      const key = c.state || 'Not specified';
+      counts[key] = (counts[key] || 0) + 1;
     });
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  }, [rawClients]);
+  }, [filteredClients]);
 
-  // Overdue and Priority Follow-up Clients
+  // Overdue and Priority Follow-up Clients derived directly from filteredClients
   const priorityClients = useMemo(() => {
-    return rawClients
+    return filteredClients
       .filter((c) => c.status === 'Overdue' || c.status === 'Assessment Due' || c.riskLevel === 'High')
       .slice(0, 5);
-  }, [rawClients]);
+  }, [filteredClients]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (selectedCountry !== 'all') count++;
+    if (selectedState !== 'all') count++;
+    if (selectedStatus !== 'all') count++;
+    if (selectedCounsellor !== 'all') count++;
+    if (selectedGender !== 'all') count++;
+    if (selectedRiskLevel !== 'all') count++;
+    if (dateRange !== 'all') count++;
+    return count;
+  }, [
+    selectedCountry,
+    selectedState,
+    selectedStatus,
+    selectedCounsellor,
+    selectedGender,
+    selectedRiskLevel,
+    dateRange,
+  ]);
+
+  const handleResetFilters = () => {
+    setSelectedCountry('all');
+    setSelectedState('all');
+    setSelectedStatus('all');
+    setSelectedCounsellor('all');
+    setSelectedGender('all');
+    setSelectedRiskLevel('all');
+    setDateRange('all');
+  };
 
   const handleTriggerAutomatedCheck = async () => {
     const res = await NotificationService.runAutomatedChecks();
@@ -180,7 +300,175 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Metric Summary Cards */}
+      {/* Filter Toolbar Placed Authoritatively at the Top of Analytics View */}
+      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-gray-200 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-gray-100">
+          <div className="flex items-center gap-2 text-xs font-bold text-gray-800">
+            <Filter className="w-4 h-4 text-red-600" />
+            <span>Active Dashboard Analytics Filters</span>
+            {activeFilterCount > 0 && (
+              <span className="bg-red-100 text-red-700 text-[10px] font-black px-2 py-0.5 rounded-full">
+                {activeFilterCount} active
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-[11px] font-semibold text-gray-500">
+              Showing <strong className="text-gray-900">{filteredClients.length}</strong> of{' '}
+              <strong className="text-gray-900">{rawClients.length}</strong> clients
+            </span>
+            {activeFilterCount > 0 && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="text-xs font-bold text-red-600 hover:text-red-700 underline cursor-pointer"
+              >
+                Reset Filters
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2.5 text-xs">
+          {/* 1. Country Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Country</label>
+            <select
+              value={selectedCountry}
+              onChange={(e) => {
+                setSelectedCountry(e.target.value);
+                setSelectedState('all'); // Reset state when country changes
+              }}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Countries</option>
+              {availableCountries.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 2. State Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">State / Region</label>
+            <select
+              value={selectedState}
+              onChange={(e) => setSelectedState(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All States / Regions</option>
+              {availableStates.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 3. Status Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Status</label>
+            <select
+              value={selectedStatus}
+              onChange={(e) => setSelectedStatus(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Statuses</option>
+              <option value="Active">Active</option>
+              <option value="Assessment Due">Assessment Due</option>
+              <option value="Overdue">Overdue</option>
+              <option value="Completed">Completed</option>
+              <option value="Awaiting Assessment">Awaiting Assessment</option>
+            </select>
+          </div>
+
+          {/* 4. Counsellor Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Counsellor</label>
+            <select
+              value={selectedCounsellor}
+              onChange={(e) => setSelectedCounsellor(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Staff</option>
+              {staff.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 5. Risk Level Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Risk Level</label>
+            <select
+              value={selectedRiskLevel}
+              onChange={(e) => setSelectedRiskLevel(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Risk Levels</option>
+              <option value="High">High Risk</option>
+              <option value="Medium">Medium Risk</option>
+              <option value="Low">Low Risk</option>
+            </select>
+          </div>
+
+          {/* 6. Gender Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Gender</label>
+            <select
+              value={selectedGender}
+              onChange={(e) => setSelectedGender(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Genders</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="Other">Other</option>
+              <option value="Prefer not to say">Prefer not to say</option>
+            </select>
+          </div>
+
+          {/* 7. Timeframe Filter */}
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Timeframe</label>
+            <select
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value as any)}
+              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:bg-white focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+            >
+              <option value="all">All Time</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Empty State Banner if no clients match active filter */}
+      {filteredClients.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-3">
+          <AlertTriangle className="w-8 h-8 text-amber-600 mx-auto" />
+          <h3 className="text-base font-bold text-amber-950">No clients match your filter criteria</h3>
+          <p className="text-xs text-amber-800 max-w-md mx-auto">
+            The selected combination of filters yielded 0 client records. Adjust your dropdown selections or click below to reset filters.
+          </p>
+          <button
+            type="button"
+            onClick={handleResetFilters}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 text-white font-bold text-xs hover:bg-amber-700 transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Reset All Filters</span>
+          </button>
+        </div>
+      )}
+
+      {/* Metric Summary Cards Calculated on filteredClients */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         {/* 1. Total Clients */}
         <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
@@ -253,116 +541,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
-      {/* Filter Toolbar */}
-      <div className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-gray-800">
-            <Filter className="w-3.5 h-3.5 text-red-600" />
-            <span>Filter Dashboard Analytics</span>
-          </div>
-          <span className="text-[11px] text-gray-400">
-            Showing {filteredClients.length} of {rawClients.length} clients
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
-          {/* Date range */}
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Timeframe</label>
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value as any)}
-              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
-            >
-              <option value="all">All Time</option>
-              <option value="7d">Last 7 Days</option>
-              <option value="30d">Last 30 Days</option>
-              <option value="90d">Last 90 Days</option>
-            </select>
-          </div>
-
-          {/* Status */}
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Status</label>
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
-            >
-              <option value="all">All Statuses</option>
-              <option value="Active">Active</option>
-              <option value="Assessment Due">Assessment Due</option>
-              <option value="Overdue">Overdue</option>
-              <option value="Completed">Completed</option>
-              <option value="Awaiting Assessment">Awaiting Assessment</option>
-            </select>
-          </div>
-
-          {/* Counsellor */}
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Counsellor</label>
-            <select
-              value={selectedCounsellor}
-              onChange={(e) => setSelectedCounsellor(e.target.value)}
-              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
-            >
-              <option value="all">All Staff</option>
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* State */}
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Nigerian State</label>
-            <select
-              value={selectedState}
-              onChange={(e) => setSelectedState(e.target.value)}
-              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
-            >
-              <option value="all">All States</option>
-              {NIGERIAN_STATES.map((st) => (
-                <option key={st} value={st}>
-                  {st}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Gender */}
-          <div>
-            <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">Gender</label>
-            <select
-              value={selectedGender}
-              onChange={(e) => setSelectedGender(e.target.value)}
-              className="w-full p-2 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
-            >
-              <option value="all">All Genders</option>
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Analytics Charts & Visual Distribution */}
+      {/* Analytics Charts & Visual Distribution Derived from filteredClients */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 1. Assessment Progression Funnel */}
         <div className="bg-white rounded-2xl p-5 sm:p-6 border border-gray-200 shadow-sm lg:col-span-2 space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-base font-bold text-gray-900">Assessment Pathway Progression</h2>
-              <p className="text-xs text-gray-500">Cumulative clients reaching each stage of the recovery workflow</p>
+              <p className="text-xs text-gray-500">
+                Cumulative clients reaching each stage of the recovery workflow ({filteredClients.length} in filtered cohort)
+              </p>
             </div>
             <span className="text-xs font-semibold text-gray-400">Progression Funnel</span>
           </div>
 
           <div className="space-y-3 pt-2">
             {Object.entries(stageCounts).map(([stage, count], idx) => {
-              const total = rawClients.length || 1;
+              const total = filteredClients.length || 1;
               const pct = Math.round((count / total) * 100);
               return (
                 <div key={stage} className="space-y-1">
@@ -398,15 +593,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="bg-white rounded-2xl p-5 sm:p-6 border border-gray-200 shadow-sm space-y-4 flex flex-col justify-between">
           <div>
             <h2 className="text-base font-bold text-gray-900">Client Status Breakdown</h2>
-            <p className="text-xs text-gray-500">Current cohort status distribution</p>
+            <p className="text-xs text-gray-500">Filtered cohort status distribution</p>
 
             <div className="space-y-2.5 mt-4">
               {[
                 { label: 'Active', count: metrics.activeClients, color: 'bg-emerald-500', text: 'text-emerald-700' },
                 { label: 'Assessment Due', count: metrics.assessmentsDueToday, color: 'bg-amber-500', text: 'text-amber-700' },
                 { label: 'Overdue', count: metrics.overdueAssessments, color: 'bg-red-600', text: 'text-red-700' },
-                { label: 'Completed Pathway', count: rawClients.filter((c) => c.status === 'Completed').length, color: 'bg-emerald-600', text: 'text-emerald-800' },
-                { label: 'Awaiting Assessment', count: rawClients.filter((c) => c.status === 'Awaiting Assessment').length, color: 'bg-gray-400', text: 'text-gray-700' },
+                { label: 'Completed Pathway', count: filteredClients.filter((c) => c.status === 'Completed').length, color: 'bg-emerald-600', text: 'text-emerald-800' },
+                { label: 'Awaiting Assessment', count: filteredClients.filter((c) => c.status === 'Awaiting Assessment').length, color: 'bg-gray-400', text: 'text-gray-700' },
               ].map((item) => (
                 <div key={item.label} className="flex items-center justify-between p-2 rounded-xl bg-gray-50 text-xs">
                   <div className="flex items-center gap-2">
@@ -431,30 +626,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
-      {/* Demographics & Priority Action Queue */}
+      {/* Demographics & Priority Action Queue Derived from filteredClients */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Top Demographics (Nigerian States & Age Groups) */}
+        {/* Top Demographics (Nigerian States & Locations) */}
         <div className="bg-white rounded-2xl p-5 sm:p-6 border border-gray-200 shadow-sm space-y-4">
           <h2 className="text-base font-bold text-gray-900">Demographic Insights</h2>
-          <p className="text-xs text-gray-500">Top enrolled Nigerian States & locations</p>
+          <p className="text-xs text-gray-500">Top states & locations in filtered cohort</p>
 
           <div className="space-y-3">
-            {stateCounts.map(([stateName, count]) => {
-              const pct = Math.round((count / (rawClients.length || 1)) * 100);
-              return (
-                <div key={stateName} className="space-y-1 text-xs">
-                  <div className="flex justify-between font-semibold">
-                    <span className="text-gray-800">{stateName}</span>
-                    <span className="text-gray-900 font-bold">
-                      {count} ({pct}%)
-                    </span>
+            {stateCounts.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">No location data for current filter.</p>
+            ) : (
+              stateCounts.map(([stateName, count]) => {
+                const pct = Math.round((count / (filteredClients.length || 1)) * 100);
+                return (
+                  <div key={stateName} className="space-y-1 text-xs">
+                    <div className="flex justify-between font-semibold">
+                      <span className="text-gray-800">{stateName}</span>
+                      <span className="text-gray-900 font-bold">
+                        {count} ({pct}%)
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-gray-900 rounded-full" style={{ width: `${pct}%` }} />
+                    </div>
                   </div>
-                  <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-gray-900 rounded-full" style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
           <div className="pt-3 border-t border-gray-100">
@@ -472,7 +671,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <AlertTriangle className="w-4 h-4 text-red-600" />
                 <span>Priority Action Queue</span>
               </h2>
-              <p className="text-xs text-gray-500">Clients requiring urgent check-in, overdue follow-up, or high-risk outreach</p>
+              <p className="text-xs text-gray-500">Filtered clients requiring urgent check-in, overdue follow-up, or high-risk outreach</p>
             </div>
             <button
               onClick={() => onNavigateTab('clients')}
@@ -484,47 +683,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div className="divide-y divide-gray-100">
-            {priorityClients.map((client) => (
-              <div
-                key={client.id}
-                onClick={() => onSelectClient(client)}
-                className="py-3 sm:py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50/80 -mx-2 px-2 rounded-xl transition-colors cursor-pointer group"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-red-50 text-red-700 font-extrabold text-xs flex items-center justify-center border border-red-100 shrink-0">
-                    {client.id.replace('GP-', '')}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-gray-950 group-hover:text-red-600 transition-colors">
-                        {client.firstName} {client.lastName}
-                      </span>
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          client.status === 'Overdue'
-                            ? 'bg-red-100 text-red-700 border border-red-200'
-                            : client.status === 'Assessment Due'
-                            ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                      >
-                        {client.status}
-                      </span>
+            {priorityClients.length === 0 ? (
+              <p className="text-xs text-gray-400 py-6 text-center italic">No high priority clients match current filter.</p>
+            ) : (
+              priorityClients.map((client) => (
+                <div
+                  key={client.id}
+                  onClick={() => onSelectClient(client)}
+                  className="py-3 sm:py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50/80 -mx-2 px-2 rounded-xl transition-colors cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-red-50 text-red-700 font-extrabold text-xs flex items-center justify-center border border-red-100 shrink-0">
+                      {client.id.replace('GP-', '')}
                     </div>
-                    <p className="text-xs text-gray-500">
-                      {client.location}, {client.state} • Stage: {client.currentStageName}
-                    </p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-950 group-hover:text-red-600 transition-colors">
+                          {client.firstName} {client.lastName}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            client.status === 'Overdue'
+                              ? 'bg-red-100 text-red-700 border border-red-200'
+                              : client.status === 'Assessment Due'
+                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}
+                        >
+                          {client.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {client.location}, {client.state} • Stage: {client.currentStageName}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <span className="text-xs font-semibold text-gray-700 block">
+                      {client.assignedCounsellorName || 'Unassigned'}
+                    </span>
+                    <span className="text-[11px] text-red-600 font-medium">Open Case File →</span>
                   </div>
                 </div>
-
-                <div className="text-right">
-                  <span className="text-xs font-semibold text-gray-700 block">
-                    {client.assignedCounsellorName || 'Unassigned'}
-                  </span>
-                  <span className="text-[11px] text-red-600 font-medium">Open Case File →</span>
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       </div>

@@ -76,7 +76,19 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
 
   // Filter & Search in Preview
   const [previewFilter, setPreviewFilter] = useState<
-    'ALL' | 'READY' | 'ALREADY_MIGRATED' | 'DUPLICATE' | 'INVALID_EMAIL' | 'INCOMPLETE'
+    | 'ALL'
+    | 'ELIGIBLE'
+    | 'READY'
+    | 'UPDATE_EXISTING'
+    | 'ALREADY_MIGRATED'
+    | 'DUPLICATE'
+    | 'INVALID_EMAIL'
+    | 'INCOMPLETE'
+    | 'NIGERIAN_NON_LAGOS'
+    | 'GHANA'
+    | 'OTHER_AFRICAN'
+    | 'ADDRESS_EXTRACTED'
+    | 'UNKNOWN_STATE'
   >('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -299,20 +311,40 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
 
   const filteredRecords = useMemo(() => {
     return records.filter((r) => {
-      if (previewFilter !== 'ALL' && r.status !== previewFilter) return false;
+      if (previewFilter === 'ELIGIBLE' && r.status !== 'READY' && r.status !== 'UPDATE_EXISTING') return false;
+      if (previewFilter === 'READY' && r.status !== 'READY') return false;
+      if (previewFilter === 'UPDATE_EXISTING' && r.status !== 'UPDATE_EXISTING') return false;
+      if (previewFilter === 'ALREADY_MIGRATED' && r.status !== 'ALREADY_MIGRATED') return false;
+      if (previewFilter === 'DUPLICATE' && r.status !== 'DUPLICATE') return false;
+      if (previewFilter === 'INVALID_EMAIL' && r.status !== 'INVALID_EMAIL') return false;
+      if (previewFilter === 'INCOMPLETE' && r.status !== 'INCOMPLETE' && r.status !== 'MISSING_REQUIRED_DATA') return false;
+      if (previewFilter === 'NIGERIAN_NON_LAGOS' && !(r.cleaned.country === 'Nigeria' && r.cleaned.state !== 'Lagos' && r.cleaned.state !== 'Not specified')) return false;
+      if (previewFilter === 'GHANA' && r.cleaned.country !== 'Ghana') return false;
+      if (previewFilter === 'OTHER_AFRICAN' && r.cleaned.country !== 'Other African Countries') return false;
+      if (previewFilter === 'ADDRESS_EXTRACTED' && !r.cleaned.isStateExtractedFromAddress) return false;
+      if (previewFilter === 'UNKNOWN_STATE' && r.cleaned.state !== 'Not specified') return false;
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesName = r.cleaned.fullName.toLowerCase().includes(q);
         const matchesEmail = r.cleaned.email.toLowerCase().includes(q);
         const matchesPhone = r.cleaned.phone.toLowerCase().includes(q);
-        if (!matchesName && !matchesEmail && !matchesPhone) return false;
+        const matchesState = r.cleaned.state ? r.cleaned.state.toLowerCase().includes(q) : false;
+        const matchesCountry = r.cleaned.country ? r.cleaned.country.toLowerCase().includes(q) : false;
+        const matchesAddress = r.cleaned.address ? r.cleaned.address.toLowerCase().includes(q) : false;
+        const matchesId = r.existingClientId ? r.existingClientId.toLowerCase().includes(q) : false;
+        if (!matchesName && !matchesEmail && !matchesPhone && !matchesState && !matchesCountry && !matchesAddress && !matchesId) return false;
       }
       return true;
     });
   }, [records, previewFilter, searchQuery]);
 
   const firstEligibleClient = useMemo(() => {
-    return records.find((r) => r.status === 'READY') || records[0];
+    return (
+      records.find((r) => r.status === 'READY') ||
+      records.find((r) => r.status === 'UPDATE_EXISTING') ||
+      records[0]
+    );
   }, [records]);
 
   // Execute First Client Test
@@ -349,14 +381,18 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
       return;
     }
 
-    // Recalculate fresh state before starting
-    const eligibleRecords = records.filter((r) => r.status === 'READY');
+    // Recalculate fresh state before starting: includes READY (new clients) AND UPDATE_EXISTING (safe updates)
+    const readyRecords = records.filter((r) => r.status === 'READY');
+    const updateRecords = records.filter((r) => r.status === 'UPDATE_EXISTING');
+    const eligibleRecords = records.filter((r) => r.status === 'READY' || r.status === 'UPDATE_EXISTING');
     const alreadyMigratedList = records.filter((r) => r.status === 'ALREADY_MIGRATED');
     const duplicateList = records.filter((r) => r.status === 'DUPLICATE');
 
     console.log('[HistoricalClientMigration] Pre-execution queue inspection:', {
       totalRecordsInFile: records.length,
       queueLength: eligibleRecords.length,
+      readyCount: readyRecords.length,
+      updateCount: updateRecords.length,
       firstQueueClient: eligibleRecords[0]?.cleaned.fullName || 'None',
       firstQueueClientRow: eligibleRecords[0]?.rowIndex,
       alreadyMigratedCount: alreadyMigratedList.length,
@@ -365,7 +401,7 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
     });
 
     if (eligibleRecords.length === 0) {
-      console.warn('[HistoricalClientMigration] No eligible clients in READY status to migrate.');
+      console.warn('[HistoricalClientMigration] No eligible migration actions (READY or UPDATE_EXISTING) to process.');
       return;
     }
 
@@ -383,7 +419,7 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
       current: 0,
       total: eligibleRecords.length,
       currentName: eligibleRecords[0]?.cleaned.fullName || 'Starting migration pipeline...',
-      currentStep: `Preparing migration pipeline for ${eligibleRecords.length} ready clients...`,
+      currentStep: `Preparing migration pipeline for ${eligibleRecords.length} eligible migration actions (${readyRecords.length} new, ${updateRecords.length} updates)...`,
       stepNumber: 0,
       totalSteps: 12,
       success: 0,
@@ -403,7 +439,7 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     try {
-      console.log(`[HistoricalClientMigration] Calling MigrationService.runFullMigration with ${eligibleRecords.length} ready clients`);
+      console.log(`[HistoricalClientMigration] Calling MigrationService.runFullMigration with ${eligibleRecords.length} eligible records (${readyRecords.length} new, ${updateRecords.length} updates)`);
       const report = await MigrationService.runFullMigration(
         eligibleRecords,
         currentFbEmail,
@@ -836,15 +872,29 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
           {/* Migration Preview Stats Cards */}
           {summary && (
             <div className="space-y-6">
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 text-center">
+              {/* Migration Preview Stats Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2.5 text-center">
                 <div className="bg-white rounded-2xl p-3 border border-gray-200 shadow-sm">
                   <p className="text-[10px] font-bold text-gray-500 uppercase">Total Source</p>
                   <p className="text-xl font-black text-gray-950 mt-1">{summary.totalSourceRows ?? summary.totalRows}</p>
                 </div>
 
-                <div className="bg-white rounded-2xl p-3 border border-emerald-200 shadow-sm bg-emerald-50/30">
-                  <p className="text-[10px] font-bold text-emerald-700 uppercase">Ready To Migrate</p>
+                <div className="bg-white rounded-2xl p-3 border border-emerald-300 shadow-sm bg-emerald-50/50 ring-1 ring-emerald-200">
+                  <p className="text-[10px] font-bold text-emerald-800 uppercase">Eligible Actions</p>
+                  <p className="text-xl font-black text-emerald-800 mt-1">{summary.readyToMigrate + (summary.existingToUpdate ?? 0)}</p>
+                  <span className="text-[9px] font-bold text-emerald-700 block mt-0.5">
+                    {summary.readyToMigrate} New + {summary.existingToUpdate ?? 0} Upd
+                  </span>
+                </div>
+
+                <div className="bg-white rounded-2xl p-3 border border-emerald-200 shadow-sm bg-emerald-50/20">
+                  <p className="text-[10px] font-bold text-emerald-700 uppercase">New Clients (Ready)</p>
                   <p className="text-xl font-black text-emerald-700 mt-1">{summary.readyToMigrate}</p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-3 border border-indigo-200 shadow-sm bg-indigo-50/30">
+                  <p className="text-[10px] font-bold text-indigo-700 uppercase">Existing to Update</p>
+                  <p className="text-xl font-black text-indigo-700 mt-1">{summary.existingToUpdate ?? 0}</p>
                 </div>
 
                 <div className="bg-white rounded-2xl p-3 border border-blue-200 shadow-sm bg-blue-50/30">
@@ -857,24 +907,99 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                   <p className="text-xl font-black text-amber-700 mt-1">{summary.potentialDuplicates}</p>
                 </div>
 
-                <div className="bg-white rounded-2xl p-3 border border-gray-200 shadow-sm">
-                  <p className="text-[10px] font-bold text-gray-700 uppercase">In Firestore</p>
-                  <p className="text-xl font-black text-gray-800 mt-1">{summary.alreadyInFirestore}</p>
-                </div>
-
-                <div className="bg-white rounded-2xl p-3 border border-gray-200 shadow-sm">
-                  <p className="text-[10px] font-bold text-emerald-600 uppercase">Valid Emails</p>
-                  <p className="text-xl font-black text-emerald-600 mt-1">{summary.validEmails}</p>
-                </div>
-
                 <div className="bg-white rounded-2xl p-3 border border-red-200 shadow-sm bg-red-50/30">
-                  <p className="text-[10px] font-bold text-red-700 uppercase">Invalid Email</p>
-                  <p className="text-xl font-black text-red-700 mt-1">{summary.invalidEmails}</p>
+                  <p className="text-[10px] font-bold text-red-700 uppercase">Invalid / Incomplete</p>
+                  <p className="text-xl font-black text-red-700 mt-1">{(summary.invalidEmails || 0) + (summary.missingInfo || 0)}</p>
+                </div>
+              </div>
+
+              {/* LOCATION & COUNTRY ACCURACY VALIDATION PANEL (Part 1 & 4) */}
+              <div className="bg-white rounded-3xl p-5 sm:p-6 border border-gray-200 shadow-sm space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
+                  <div>
+                    <h3 className="text-sm font-black text-gray-950 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>Country & State Parsing Verification (Zero Lagos Overrides)</span>
+                    </h3>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      Deterministic location mapping. Nigerian states extracted safely from State column or Address. Foreign countries preserved. Unknown states marked "Not specified".
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 self-start sm:self-auto">
+                    Rules Compliant
+                  </span>
                 </div>
 
-                <div className="bg-white rounded-2xl p-3 border border-purple-200 shadow-sm bg-purple-50/30">
-                  <p className="text-[10px] font-bold text-purple-700 uppercase">Missing Info</p>
-                  <p className="text-xl font-black text-purple-700 mt-1">{summary.missingInfo}</p>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFilter('NIGERIAN_NON_LAGOS')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      previewFilter === 'NIGERIAN_NON_LAGOS'
+                        ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-300'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase text-gray-500 block">Nigerian Non-Lagos</span>
+                    <p className="text-lg font-black text-gray-950 mt-0.5">{summary.nigerianNonLagosCount ?? 0}</p>
+                    <span className="text-[10px] text-emerald-700 font-medium">Oyo, Kano, Delta, etc.</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFilter('GHANA')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      previewFilter === 'GHANA'
+                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase text-gray-500 block">Ghana Clients</span>
+                    <p className="text-lg font-black text-gray-950 mt-0.5">{summary.ghanaCount ?? 0}</p>
+                    <span className="text-[10px] text-amber-700 font-medium">Foreign preserved</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFilter('OTHER_AFRICAN')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      previewFilter === 'OTHER_AFRICAN'
+                        ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-300'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase text-gray-500 block">Other African</span>
+                    <p className="text-lg font-black text-gray-950 mt-0.5">{summary.otherAfricanCountriesCount ?? 0}</p>
+                    <span className="text-[10px] text-purple-700 font-medium">Foreign preserved</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFilter('ADDRESS_EXTRACTED')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      previewFilter === 'ADDRESS_EXTRACTED'
+                        ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-300'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase text-gray-500 block">From Address</span>
+                    <p className="text-lg font-black text-gray-950 mt-0.5">{summary.addressExtractedStateCount ?? 0}</p>
+                    <span className="text-[10px] text-blue-700 font-medium">Address-extracted</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPreviewFilter('UNKNOWN_STATE')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      previewFilter === 'UNKNOWN_STATE'
+                        ? 'bg-gray-200 border-gray-400 ring-2 ring-gray-400'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[10px] font-bold uppercase text-gray-500 block">Not Specified</span>
+                    <p className="text-lg font-black text-gray-950 mt-0.5">{summary.unknownStateCount ?? 0}</p>
+                    <span className="text-[10px] text-gray-600 font-medium">Unknown (not Lagos)</span>
+                  </button>
                 </div>
               </div>
 
@@ -935,12 +1060,16 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     <p className="font-bold text-indigo-300 uppercase tracking-wider text-[11px]">Status Breakdown Audit</p>
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                       <div className="flex items-center justify-between bg-black/20 p-2 rounded-lg">
-                        <span className="text-gray-400">Ready:</span>
+                        <span className="text-gray-400">Ready (New):</span>
                         <strong className="text-emerald-400 font-mono">{summary.readyToMigrate}</strong>
                       </div>
                       <div className="flex items-center justify-between bg-black/20 p-2 rounded-lg">
-                        <span className="text-gray-400">Excluded:</span>
-                        <strong className="text-amber-400 font-mono">{records.length - summary.readyToMigrate}</strong>
+                        <span className="text-gray-400">Existing to Update:</span>
+                        <strong className="text-indigo-400 font-mono">{summary.existingToUpdate ?? 0}</strong>
+                      </div>
+                      <div className="flex items-center justify-between bg-black/20 p-2 rounded-lg col-span-2 border border-emerald-500/40 bg-emerald-950/40">
+                        <span className="text-emerald-300 font-bold">Eligible Migration Actions:</span>
+                        <strong className="text-emerald-300 font-mono text-sm">{summary.readyToMigrate + (summary.existingToUpdate ?? 0)}</strong>
                       </div>
                       <div className="flex items-center justify-between bg-black/20 p-2 rounded-lg">
                         <span className="text-gray-400">Already Migrated:</span>
@@ -963,7 +1092,7 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                   <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">Exact Reconciliation Equation</p>
                   <p className="font-mono text-sm font-black text-white mt-1">
                     {summary.reconciliation?.reconciliationEquation ||
-                      `Source Client Rows (${records.length}) = Ready (${summary.readyToMigrate}) + Already Migrated (${summary.alreadyMigrated}) + Duplicates (${summary.potentialDuplicates}) + Invalid/Incomplete (${summary.invalidEmails + summary.missingInfo}) = Parsed (${records.length})`}
+                      `Source Client Rows (${records.length}) = Ready (${summary.readyToMigrate}) + Existing to Update (${summary.existingToUpdate ?? 0}) + Already Migrated (${summary.alreadyMigrated}) + Duplicates (${summary.potentialDuplicates}) + Invalid/Incomplete (${summary.invalidEmails + summary.missingInfo}) = Parsed (${records.length})`}
                   </p>
                 </div>
               </div>
@@ -1013,17 +1142,19 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                   </div>
 
                   <div className="bg-emerald-50/70 rounded-2xl p-4 border border-emerald-200 shadow-sm">
-                    <p className="text-[11px] font-black text-emerald-700 uppercase tracking-wider">VALID CLIENTS</p>
+                    <p className="text-[11px] font-black text-emerald-700 uppercase tracking-wider">VALID CLIENTS (ELIGIBLE ACTIONS)</p>
                     <p className="text-2xl font-black text-emerald-950 mt-1">
-                      {summary.reconciliation?.validRows ?? summary.readyToMigrate}
+                      {summary.reconciliation?.validRows ?? (summary.readyToMigrate + (summary.existingToUpdate ?? 0))}
                     </p>
-                    <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">Ready for full migration queue</p>
+                    <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">
+                      {summary.readyToMigrate} New + {summary.existingToUpdate ?? 0} Updates
+                    </p>
                   </div>
 
                   <div className="bg-amber-50/70 rounded-2xl p-4 border border-amber-200 shadow-sm">
                     <p className="text-[11px] font-black text-amber-800 uppercase tracking-wider">EXCLUDED CLIENTS</p>
                     <p className="text-2xl font-black text-amber-950 mt-1">
-                      {summary.reconciliation?.excludedRows ?? summary.excludedRows?.length ?? (records.length - summary.readyToMigrate)}
+                      {summary.reconciliation?.excludedRows ?? summary.excludedRows?.length ?? (records.length - (summary.readyToMigrate + (summary.existingToUpdate ?? 0)))}
                     </p>
                     <p className="text-[10px] text-amber-700 font-semibold mt-0.5">Already migrated, duplicates & unparsed</p>
                   </div>
@@ -1035,12 +1166,14 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-gray-700">Source Reconciliation:</span>
                       <span className="font-mono bg-white px-2 py-0.5 rounded border border-gray-200 font-bold text-indigo-700">
-                        Client Rows ({records.length}) = Ready ({summary.readyToMigrate}) + Already Migrated ({summary.alreadyMigrated}) + Duplicates ({summary.potentialDuplicates}) + Others ({summary.invalidEmails + summary.missingInfo})
+                        Client Rows ({records.length}) = Ready ({summary.readyToMigrate}) + Existing to Update ({summary.existingToUpdate ?? 0}) + Already Migrated ({summary.alreadyMigrated}) + Duplicates ({summary.potentialDuplicates}) + Others ({summary.invalidEmails + summary.missingInfo})
                       </span>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-gray-600">
                       <span>Queue Breakdown:</span>
-                      <strong className="text-emerald-700">{summary.readyToMigrate} Ready</strong>
+                      <strong className="text-emerald-700">{summary.readyToMigrate} Ready (New)</strong>
+                      <span>•</span>
+                      <strong className="text-indigo-700">{summary.existingToUpdate ?? 0} Existing to Update</strong>
                       <span>•</span>
                       <strong className="text-blue-700">{summary.alreadyMigrated} Already Migrated (GP-0017)</strong>
                       <span>•</span>
@@ -1159,8 +1292,8 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     </span>
                   </div>
                   <p className="text-xs text-gray-600">
-                    Existing client GP-0017 (Shodipo Ayomide) is protected, and GP-0018 is a consumed test ID. Full Migration will migrate exactly{' '}
-                    <strong className="text-emerald-700 font-bold">{summary.readyToMigrate}</strong> eligible clients out of{' '}
+                    Existing client GP-0017 (Shodipo Ayomide) is protected, and GP-0018 is a consumed test ID. Full Migration will process exactly{' '}
+                    <strong className="text-emerald-700 font-bold">{summary.readyToMigrate + (summary.existingToUpdate ?? 0)}</strong> eligible migration actions ({summary.readyToMigrate} new, {summary.existingToUpdate ?? 0} safe updates) out of{' '}
                     <strong className="text-gray-900 font-bold">{summary.totalSourceRows ?? summary.totalRows}</strong> total records in file.
                   </p>
                 </div>
@@ -1188,7 +1321,7 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                   <button
                     type="button"
                     onClick={handleStartFullMigration}
-                    disabled={isMigrating || summary.readyToMigrate === 0}
+                    disabled={isMigrating || (summary.readyToMigrate + (summary.existingToUpdate ?? 0)) === 0}
                     className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-md shadow-red-600/20 transition-all disabled:opacity-50 cursor-pointer"
                   >
                     {isMigrating ? (
@@ -1199,7 +1332,13 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     ) : (
                       <>
                         <Play className="w-4 h-4" />
-                        <span>Start Full Migration ({summary.readyToMigrate} Ready Clients)</span>
+                        <span>
+                          {summary.readyToMigrate > 0 && (summary.existingToUpdate ?? 0) > 0
+                            ? `Start Full Migration (${summary.readyToMigrate + (summary.existingToUpdate ?? 0)} Eligible Actions: ${summary.readyToMigrate} Ready, ${summary.existingToUpdate} Updates)`
+                            : (summary.existingToUpdate ?? 0) > 0
+                            ? `Start Full Migration (${summary.existingToUpdate} Eligible Updates)`
+                            : `Start Full Migration (${summary.readyToMigrate} Ready Clients)`}
+                        </span>
                       </>
                     )}
                   </button>
@@ -1303,10 +1442,16 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     <select
                       value={previewFilter}
                       onChange={(e) => setPreviewFilter(e.target.value as any)}
-                      className="px-3 py-1.5 rounded-xl border border-gray-200 bg-gray-50 text-xs font-semibold text-gray-700 focus:bg-white focus:outline-none"
+                      className="px-3 py-1.5 rounded-xl border border-gray-200 bg-gray-50 text-xs font-semibold text-gray-700 focus:bg-white focus:outline-none cursor-pointer"
                     >
-                      <option value="ALL">All Statuses ({records.length})</option>
-                      <option value="READY">Ready to Migrate ({summary.readyToMigrate})</option>
+                      <option value="ALL">All Records ({records.length})</option>
+                      <option value="READY">Ready to Migrate — New ({summary.readyToMigrate})</option>
+                      <option value="UPDATE_EXISTING">Existing to Update ({summary.existingToUpdate ?? 0})</option>
+                      <option value="NIGERIAN_NON_LAGOS">Nigerian Non-Lagos ({summary.nigerianNonLagosCount ?? 0})</option>
+                      <option value="GHANA">Ghana Clients ({summary.ghanaCount ?? 0})</option>
+                      <option value="OTHER_AFRICAN">Other African Countries ({summary.otherAfricanCountriesCount ?? 0})</option>
+                      <option value="ADDRESS_EXTRACTED">From Address ({summary.addressExtractedStateCount ?? 0})</option>
+                      <option value="UNKNOWN_STATE">State Not Specified ({summary.unknownStateCount ?? 0})</option>
                       <option value="ALREADY_MIGRATED">Already Migrated ({summary.alreadyMigrated})</option>
                       <option value="DUPLICATE">Duplicates ({summary.potentialDuplicates})</option>
                       <option value="INVALID_EMAIL">Invalid Email ({summary.invalidEmails})</option>
@@ -1319,41 +1464,82 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                   <table className="w-full text-left text-xs">
                     <thead className="bg-gray-50 border-b border-gray-200 text-gray-600">
                       <tr>
-                        <th className="py-3 px-3">Excel Row #</th>
-                        <th className="py-3 px-4">Full Name</th>
-                        <th className="py-3 px-4">Email</th>
-                        <th className="py-3 px-3">Phone</th>
-                        <th className="py-3 px-3">Age/Gender</th>
-                        <th className="py-3 px-3">Gambling Experience</th>
-                        <th className="py-3 px-3">Amount Lost</th>
-                        <th className="py-3 px-3">Severity</th>
-                        <th className="py-3 px-3">Status</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Row #</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Client ID</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Client Name</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Country</th>
+                        <th className="py-3 px-3 whitespace-nowrap">State</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Address (Source)</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Phone</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Severity</th>
+                        <th className="py-3 px-3 whitespace-nowrap">Migration Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredRecords.slice(0, 50).map((r) => (
+                      {filteredRecords.slice(0, 100).map((r) => (
                         <tr key={r.rowIndex} className="hover:bg-gray-50/70 transition-colors">
-                          <td className="py-2.5 px-3 font-mono font-bold text-gray-500">Row {r.rowIndex}</td>
-                          <td className="py-2.5 px-4 font-bold text-gray-900">
-                            {r.cleaned.fullName}
-                            {r.existingClientId && (
-                              <span className="ml-2 font-mono text-[10px] bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
+                          <td className="py-2.5 px-3 font-mono font-bold text-gray-500 whitespace-nowrap">Row {r.rowIndex}</td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            {r.existingClientId ? (
+                              <span className="font-mono font-black text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded">
                                 {r.existingClientId}
+                              </span>
+                            ) : (
+                              <span className="font-mono text-[11px] text-gray-400 italic">
+                                [New Client]
                               </span>
                             )}
                           </td>
-                          <td className="py-2.5 px-4 text-gray-600 font-mono text-[11px]">{r.cleaned.email}</td>
-                          <td className="py-2.5 px-3 text-gray-500 whitespace-nowrap">{r.cleaned.phone}</td>
-                          <td className="py-2.5 px-3 text-gray-600">
-                            {r.cleaned.age} yrs / {r.cleaned.gender}
+                          <td className="py-2.5 px-4 font-bold text-gray-900">
+                            <div>
+                              <span>{r.cleaned.fullName}</span>
+                              <p className="text-[10px] text-gray-400 font-mono font-normal">{r.cleaned.email}</p>
+                            </div>
                           </td>
-                          <td className="py-2.5 px-3 text-gray-600 max-w-[140px] truncate" title={r.cleaned.gamblingExperience}>
-                            {r.cleaned.gamblingExperience || '—'}
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            {r.cleaned.country === 'Ghana' ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-full">
+                                🇬🇭 Ghana
+                              </span>
+                            ) : r.cleaned.country === 'Other African Countries' ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black bg-purple-100 text-purple-900 border border-purple-300 px-2 py-0.5 rounded-full">
+                                🌍 Other African
+                              </span>
+                            ) : r.cleaned.country === 'Nigeria' ? (
+                              <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                Nigeria
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-gray-500 italic">
+                                {r.cleaned.country || 'Not specified'}
+                              </span>
+                            )}
                           </td>
-                          <td className="py-2.5 px-3 font-semibold text-gray-700 whitespace-nowrap">
-                            {r.cleaned.amountSpentLost || '—'}
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            {r.cleaned.state === 'Not specified' ? (
+                              <span className="text-[10px] text-gray-500 italic bg-gray-100 px-2 py-0.5 rounded border border-gray-200">
+                                Not specified
+                              </span>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-gray-900 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded text-[11px]">
+                                  {r.cleaned.state}
+                                </span>
+                                {r.cleaned.isStateExtractedFromAddress && (
+                                  <span className="text-[9px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-1 py-0.2 rounded" title="Extracted safely from source address">
+                                    address
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </td>
-                          <td className="py-2.5 px-3">
+                          <td className="py-2.5 px-4 text-gray-600 max-w-[220px]">
+                            <p className="truncate text-xs" title={r.cleaned.address}>
+                              {r.cleaned.address || <span className="text-gray-400 italic">None</span>}
+                            </p>
+                          </td>
+                          <td className="py-2.5 px-3 text-gray-500 whitespace-nowrap font-mono text-[11px]">{r.cleaned.phone}</td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
                             <span
                               className={`text-[10px] font-bold px-2 py-0.5 rounded ${
                                 r.cleaned.severity === 'High'
@@ -1366,11 +1552,20 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                               {r.cleaned.severity}
                             </span>
                           </td>
-                          <td className="py-2.5 px-3">
+                          <td className="py-2.5 px-3 whitespace-nowrap">
                             {r.status === 'READY' && (
                               <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
                                 <CheckCircle2 className="w-3 h-3" />
-                                Ready
+                                Ready (New)
+                              </span>
+                            )}
+                            {r.status === 'UPDATE_EXISTING' && (
+                              <span
+                                className="inline-flex items-center gap-1 text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200"
+                                title={r.duplicateReason}
+                              >
+                                <RefreshCw className="w-3 h-3 text-indigo-600" />
+                                Update Existing
                               </span>
                             )}
                             {r.status === 'ALREADY_MIGRATED' && (
@@ -1412,9 +1607,9 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                     </tbody>
                   </table>
 
-                  {filteredRecords.length > 50 && (
+                  {filteredRecords.length > 100 && (
                     <div className="p-3 bg-gray-50 border-t border-gray-200 text-center text-xs text-gray-500 font-medium">
-                      Showing first 50 of {filteredRecords.length} records.
+                      Showing first 100 of {filteredRecords.length} records.
                     </div>
                   )}
 

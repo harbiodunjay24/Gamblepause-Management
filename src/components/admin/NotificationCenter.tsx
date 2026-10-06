@@ -23,8 +23,31 @@ export const NotificationCenter: React.FC = () => {
   const [testChannel, setTestChannel] = useState<'SMS' | 'Email'>('SMS');
   const [testSentNotice, setTestSentNotice] = useState<string | null>(null);
 
+  // Counsellor Email Serverless API diagnostic test state
+  const [isTestingEmail, setIsTestingEmail] = useState(false);
+  const [emailDiagnosticResult, setEmailDiagnosticResult] = useState<{
+    success: boolean;
+    stage?: string;
+    message?: string;
+    error?: string;
+    httpStatus?: number;
+  } | null>(null);
+
   const refreshLogs = () => {
     setNotifications(dataService.getNotifications());
+  };
+
+  const handleTestCounsellorEmail = async () => {
+    setIsTestingEmail(true);
+    setEmailDiagnosticResult(null);
+    try {
+      const res = await dataService.testCounsellorEmailTransport();
+      setEmailDiagnosticResult(res);
+    } catch (e: any) {
+      setEmailDiagnosticResult({ success: false, error: e?.message || 'Error executing diagnostic' });
+    } finally {
+      setIsTestingEmail(false);
+    }
   };
 
   const handleRunManualScan = async () => {
@@ -106,13 +129,57 @@ export const NotificationCenter: React.FC = () => {
       )}
 
       {/* Gateway Status Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Counsellor Email API (Vercel Serverless) */}
+        <div className="p-4 rounded-2xl bg-white border border-gray-200 shadow-sm space-y-2 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-purple-600" />
+                <span className="text-xs font-bold text-gray-900">Counsellor Email (Vercel API)</span>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                emailDiagnosticResult?.success
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-purple-50 text-purple-700 border-purple-200'
+              }`}>
+                {emailDiagnosticResult?.success ? 'Transport OK' : 'Serverless Function'}
+              </span>
+            </div>
+            <p className="text-xs text-gray-500">
+              Dispatches new assignment & reassignment notifications to counsellors via Gmail SMTP.
+            </p>
+          </div>
+          <div className="pt-2 space-y-2">
+            <button
+              type="button"
+              onClick={handleTestCounsellorEmail}
+              disabled={isTestingEmail}
+              className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer"
+            >
+              <RefreshCw className={`w-3 h-3 ${isTestingEmail ? 'animate-spin' : ''}`} />
+              <span>{isTestingEmail ? 'Verifying Vercel API...' : 'Test Vercel Email API'}</span>
+            </button>
+            {emailDiagnosticResult && (
+              <div className={`p-2 rounded-lg text-[10px] border font-mono ${
+                emailDiagnosticResult.success
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : 'bg-amber-50 border-amber-200 text-amber-900'
+              }`}>
+                <div><strong>Status:</strong> {emailDiagnosticResult.httpStatus ? `HTTP ${emailDiagnosticResult.httpStatus}` : (emailDiagnosticResult.success ? 'Success' : 'Notice')}</div>
+                <div><strong>Stage:</strong> {emailDiagnosticResult.stage || 'unknown'}</div>
+                <div className="truncate"><strong>Result:</strong> {emailDiagnosticResult.message || emailDiagnosticResult.error}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Termii SMS */}
         <div className="p-4 rounded-2xl bg-white border border-gray-200 shadow-sm space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Smartphone className="w-4 h-4 text-red-600" />
-              <span className="text-xs font-bold text-gray-900">Termii SMS Gateway (Nigeria)</span>
+              <span className="text-xs font-bold text-gray-900">Termii SMS (Nigeria)</span>
             </div>
             <span className="text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
               Connected

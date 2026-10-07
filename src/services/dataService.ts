@@ -2610,12 +2610,14 @@ class DataService {
       const result = await response.json().catch(() => ({}));
       console.log('[Email Diagnostic] Diagnostic response payload:', result);
 
+      const isSuccess = response.ok && result.success === true;
+
       return {
-        success: response.ok && result.success,
-        stage: result.stage,
+        success: isSuccess,
+        stage: result.stage || (isSuccess ? 'smtp_send_success' : 'server_error'),
         message: result.message,
-        error: result.error,
-        httpStatus: response.status,
+        error: result.error || (!isSuccess ? `HTTP ${response.status}: ${response.statusText}` : undefined),
+        httpStatus: response.status || (isSuccess ? 200 : 500),
         recipient: result.recipient,
         messageId: result.messageId,
       };
@@ -2625,6 +2627,7 @@ class DataService {
         success: false,
         stage: 'network_fetch',
         error: `Network error: ${err?.message || err}`,
+        httpStatus: 500,
       };
     }
   }

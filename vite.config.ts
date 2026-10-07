@@ -79,6 +79,12 @@ function suppressViteHmrPlugin(): Plugin {
     return origDebug.apply(console, arguments);
   };
 
+  var origLog = console.log;
+  console.log = function() {
+    if (isFiltered(arguments)) return;
+    return origLog.apply(console, arguments);
+  };
+
   window.addEventListener('error', function(e) {
     var msg = (e && (e.message || e.filename || (e.error && (e.error.message || e.error.stack)))) ? String(e.message || e.filename || e.error.message) : '';
     if (

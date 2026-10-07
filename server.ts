@@ -1152,6 +1152,9 @@ app.all('/api/send-counsellor-email', (req, res) => {
 app.all('/api/notifications/send-email', (req, res) => {
   return sendCounsellorEmailHandler(req, res);
 });
+app.all('/api/send-email', (req, res) => {
+  return sendCounsellorEmailHandler(req, res);
+});
 
 // ---------------------------------------------------------
 // Vite & Production Static Serving

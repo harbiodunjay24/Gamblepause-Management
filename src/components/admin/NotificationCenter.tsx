@@ -199,40 +199,48 @@ export const NotificationCenter: React.FC = () => {
             )}
 
             {!isTestingEmail && emailDiagnosticResult && (
-              <div className={`p-2.5 rounded-xl text-[11px] border font-mono space-y-1 ${
+              <div className={`p-2.5 rounded-xl text-[11px] border font-mono space-y-1.5 ${
                 emailDiagnosticResult.success
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                  : 'bg-amber-50 border-amber-200 text-amber-950'
+                  : 'bg-red-50 border-red-200 text-red-950'
               }`}>
-                <div className="font-bold flex items-center justify-between pb-0.5 border-b border-current/10">
-                  <span className="flex items-center gap-1">
+                <div className="font-bold flex items-center justify-between pb-1 border-b border-current/10">
+                  <span className="flex items-center gap-1.5">
                     {emailDiagnosticResult.success ? (
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                     ) : (
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
                     )}
                     SMTP Test
                   </span>
-                  <span className="text-[10px] font-bold">
-                    {emailDiagnosticResult.httpStatus ? `HTTP ${emailDiagnosticResult.httpStatus}` : (emailDiagnosticResult.success ? 'HTTP 200' : 'Notice')}
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    emailDiagnosticResult.success
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-red-100 text-red-800'
+                  }`}>
+                    {emailDiagnosticResult.success
+                      ? 'HTTP 200'
+                      : (emailDiagnosticResult.httpStatus && emailDiagnosticResult.httpStatus !== 200
+                          ? `HTTP ${emailDiagnosticResult.httpStatus}`
+                          : 'HTTP 500')}
                   </span>
                 </div>
                 <div>
                   <strong>Status:</strong>{' '}
-                  <span className={emailDiagnosticResult.success ? 'text-emerald-700 font-bold' : 'text-amber-800 font-bold'}>
+                  <span className={emailDiagnosticResult.success ? 'text-emerald-700 font-bold' : 'text-red-700 font-bold'}>
                     {emailDiagnosticResult.success ? 'Sent' : 'Failed'}
                   </span>
                 </div>
                 <div>
                   <strong>{emailDiagnosticResult.success ? 'Result:' : 'Reason:'}</strong>{' '}
-                  <span>{emailDiagnosticResult.success ? (emailDiagnosticResult.message || 'Email sent successfully') : (emailDiagnosticResult.error || 'SMTP delivery failed')}</span>
+                  <span>{emailDiagnosticResult.success ? (emailDiagnosticResult.message || 'Email sent successfully (accepted by SMTP transport)') : (emailDiagnosticResult.error || 'SMTP delivery failed')}</span>
                 </div>
                 {emailDiagnosticResult.recipient && (
                   <div><strong>Recipient:</strong> <span className="font-semibold text-gray-800">{emailDiagnosticResult.recipient}</span></div>
                 )}
                 {emailDiagnosticResult.messageId && (
                   <div className="truncate text-[10px] text-gray-500">
-                    <strong>MessageID:</strong> {emailDiagnosticResult.messageId}
+                    <strong>Message ID:</strong> {emailDiagnosticResult.messageId}
                   </div>
                 )}
               </div>

@@ -2108,7 +2108,22 @@ class DataService {
       notificationId: counsellorNotification.id,
       clientId: client.id,
       counsellorId: staff.id,
+      actionType: isReassignment ? 'reassignment' : 'assignment',
+      previousCounsellorName: isReassignment ? previousCounsellorName : undefined,
+      reason: assignmentRecord.reason,
     }).catch((err) => console.warn('[Email Dispatch] Counsellor assignment email notice:', err));
+
+    // 4c. Non-blocking trigger for transfer notification to previous counsellor
+    if (isReassignment && prevNotif && previousCounsellorId && prevStaff) {
+      this.dispatchCounsellorAssignmentEmail({
+        notificationId: prevNotif.id,
+        clientId: client.id,
+        counsellorId: previousCounsellorId,
+        actionType: 'reassignment_previous',
+        newCounsellorName: staff.name,
+        reason: assignmentRecord.reason,
+      }).catch((err) => console.warn('[Email Dispatch] Previous counsellor transfer email notice:', err));
+    }
 
     // 5. Audit log
     this.logAudit(
@@ -2253,14 +2268,19 @@ class DataService {
 
   /**
    * Dispatches real email notification to assigned counsellor via authenticated backend/Vercel serverless function
+   * Supports initial assignment, reassignment to new counsellor, and transfer notification to previous counsellor.
    * Does NOT block or fail client operations if email transport is unavailable or fails.
    */
   public async dispatchCounsellorAssignmentEmail(payload: {
     notificationId: string;
     clientId: string;
     counsellorId: string;
-  }): Promise<{ success: boolean; stage?: string; message?: string; error?: string }> {
-    console.log(`[Email Dispatch] Started email dispatch for client: "${payload.clientId}", counsellor: "${payload.counsellorId}", notif: "${payload.notificationId}"`);
+    actionType?: 'assignment' | 'reassignment' | 'reassignment_previous';
+    previousCounsellorName?: string;
+    newCounsellorName?: string;
+    reason?: string;
+  }): Promise<{ success: boolean; stage?: string; message?: string; error?: string; messageId?: string }> {
+    console.log(`[Email Dispatch] Started email dispatch for client: "${payload.clientId}", counsellor: "${payload.counsellorId}", notif: "${payload.notificationId}", action: "${payload.actionType || 'assignment'}"`);
 
     try {
       // 1. Ensure Firebase Auth state is ready if SDK provides authStateReady
@@ -2365,15 +2385,23 @@ class DataService {
         if (notif) {
           notif.emailStatus = 'sent';
           notif.emailSentAt = new Date().toISOString();
+          if (result.messageId) notif.emailMessageId = result.messageId;
           this.saveToStorage();
         }
         return {
           success: true,
           stage: result.stage || 'dispatched',
           message: result.message,
+          messageId: result.messageId,
         };
       } else {
         console.warn(`[Email Dispatch] Email API returned error (HTTP ${response.status}, stage: ${result.stage || 'unknown'}):`, result.error || response.statusText);
+        const notif = this.notifications.find((n) => n.id === payload.notificationId);
+        if (notif) {
+          notif.emailStatus = 'failed';
+          notif.emailLastError = result.error || `HTTP ${response.status}: ${response.statusText}`;
+          this.saveToStorage();
+        }
         return {
           success: false,
           stage: result.stage || 'server_error',
@@ -2391,16 +2419,120 @@ class DataService {
   }
 
   /**
-   * Diagnostic method for Super Admins to verify Vercel serverless email transport independently
+   * Dispatches client assessment availability & reminder emails via authenticated Vercel serverless function
    */
-  public async testCounsellorEmailTransport(): Promise<{
+  public async dispatchAssessmentEmail(payload: {
+    notificationId?: string;
+    clientId: string;
+    recipientEmail: string;
+    clientName: string;
+    assessmentName: string;
+    assessmentLink: string;
+    type: 'ready' | 'reminder_24h' | 'reminder_3d' | 'overdue' | 'welcome';
+  }): Promise<{ success: boolean; stage?: string; message?: string; error?: string; messageId?: string }> {
+    try {
+      if (auth && typeof (auth as any).authStateReady === 'function') {
+        try {
+          await (auth as any).authStateReady();
+        } catch {}
+      }
+
+      let fbUser = auth?.currentUser;
+      if (!fbUser) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        fbUser = auth?.currentUser;
+      }
+
+      if (!fbUser) {
+        return {
+          success: false,
+          stage: 'client_auth',
+          error: 'No active Firebase Auth session in browser.',
+        };
+      }
+
+      const idToken = await fbUser.getIdToken();
+      const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+      const primaryApiUrl = `${baseUrl}/api/notifications/send-counsellor-email`;
+
+      const requestBody = {
+        actionType: 'assessment',
+        notificationId: payload.notificationId,
+        clientId: payload.clientId,
+        recipientEmail: payload.recipientEmail,
+        clientName: payload.clientName,
+        assessmentName: payload.assessmentName,
+        assessmentLink: payload.assessmentLink,
+        type: payload.type,
+      };
+
+      let response = await fetch(primaryApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (response.status === 404) {
+        const fallbackApiUrl = `${baseUrl}/api/send-counsellor-email`;
+        response = await fetch(fallbackApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify(requestBody),
+        });
+      }
+
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.success) {
+        if (payload.notificationId) {
+          const notif = this.notifications.find((n) => n.id === payload.notificationId);
+          if (notif) {
+            notif.emailStatus = 'sent';
+            notif.emailSentAt = new Date().toISOString();
+            if (result.messageId) notif.emailMessageId = result.messageId;
+            this.saveToStorage();
+          }
+        }
+        return {
+          success: true,
+          stage: result.stage || 'dispatched',
+          message: result.message,
+          messageId: result.messageId,
+        };
+      } else {
+        return {
+          success: false,
+          stage: result.stage || 'server_error',
+          error: result.error || `HTTP ${response.status}: ${response.statusText}`,
+        };
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        stage: 'client_exception',
+        error: err?.message || 'Failed to dispatch assessment email',
+      };
+    }
+  }
+
+  /**
+   * Diagnostic method for Super Admins to verify Vercel serverless email transport by executing a real SMTP send
+   */
+  public async testCounsellorEmailTransport(testRecipient?: string): Promise<{
     success: boolean;
     stage?: string;
     message?: string;
     error?: string;
     httpStatus?: number;
+    recipient?: string;
+    messageId?: string;
   }> {
-    console.log('[Email Diagnostic] Starting independent SMTP transport verification...');
+    console.log('[Email Diagnostic] Starting genuine SMTP test dispatch...');
 
     if (auth && typeof (auth as any).authStateReady === 'function') {
       try {
@@ -2440,6 +2572,12 @@ class DataService {
     const primaryApiUrl = `${baseUrl}/api/notifications/send-counsellor-email`;
     console.log(`[Email Diagnostic] Testing primary endpoint: ${primaryApiUrl}`);
 
+    const payload = {
+      isTest: true,
+      actionType: 'test',
+      testRecipient: testRecipient?.trim() || undefined,
+    };
+
     try {
       let response = await fetch(primaryApiUrl, {
         method: 'POST',
@@ -2447,7 +2585,7 @@ class DataService {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ isTest: true }),
+        body: JSON.stringify(payload),
       });
 
       console.log(`[Email Diagnostic] Primary endpoint status: ${response.status} ${response.statusText}`);
@@ -2461,7 +2599,7 @@ class DataService {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${idToken}`,
           },
-          body: JSON.stringify({ isTest: true }),
+          body: JSON.stringify(payload),
         });
         console.log(`[Email Diagnostic] Fallback endpoint status: ${fallbackRes.status} ${fallbackRes.statusText}`);
         if (fallbackRes.status !== 404) {
@@ -2478,6 +2616,8 @@ class DataService {
         message: result.message,
         error: result.error,
         httpStatus: response.status,
+        recipient: result.recipient,
+        messageId: result.messageId,
       };
     } catch (err: any) {
       console.error('[Email Diagnostic] Network exception during transport test:', err);

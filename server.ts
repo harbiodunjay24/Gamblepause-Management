@@ -1142,8 +1142,14 @@ app.patch('/api/notifications/:id/read', (req, res) => {
   res.json({ success: true });
 });
 
-// Counsellor Email Notification Dispatch Endpoint (Vercel-compatible)
+// Counsellor Email & SMTP Notification Dispatch Endpoints (Vercel-compatible)
 app.all('/api/notifications/send-counsellor-email', (req, res) => {
+  return sendCounsellorEmailHandler(req, res);
+});
+app.all('/api/send-counsellor-email', (req, res) => {
+  return sendCounsellorEmailHandler(req, res);
+});
+app.all('/api/notifications/send-email', (req, res) => {
   return sendCounsellorEmailHandler(req, res);
 });
 

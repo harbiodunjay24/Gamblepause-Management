@@ -349,7 +349,7 @@ export class NotificationService {
     const smsContent = this.getSmsContent(payload);
 
     // Queue Email
-    dataService.queueNotification({
+    const emailNotif = dataService.queueNotification({
       clientId: client.id,
       clientName: `${client.firstName} ${client.lastName}`,
       channel: 'Email',
@@ -369,6 +369,17 @@ export class NotificationService {
       scheduledFor: new Date().toISOString(),
       sentAt: new Date().toISOString(),
     });
+
+    // Real SMTP delivery attempt via Vercel / serverless endpoint
+    dataService.dispatchAssessmentEmail({
+      notificationId: emailNotif.id,
+      clientId: client.id,
+      recipientEmail: client.email,
+      clientName: `${client.firstName} ${client.lastName}`,
+      assessmentName: form.name,
+      assessmentLink,
+      type,
+    }).catch((err) => console.warn('[Email Dispatch] Assessment reminder SMTP dispatch notice:', err));
 
     // Dispatch SMS via Termii Provider
     const termiiResult = await this.termiiProvider.sendSms({

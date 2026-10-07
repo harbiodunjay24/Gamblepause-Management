@@ -24,6 +24,7 @@ export const NotificationCenter: React.FC = () => {
   const [testSentNotice, setTestSentNotice] = useState<string | null>(null);
 
   // Counsellor Email Serverless API diagnostic test state
+  const [customSmtpRecipient, setCustomSmtpRecipient] = useState('');
   const [isTestingEmail, setIsTestingEmail] = useState(false);
   const [emailDiagnosticResult, setEmailDiagnosticResult] = useState<{
     success: boolean;
@@ -31,6 +32,8 @@ export const NotificationCenter: React.FC = () => {
     message?: string;
     error?: string;
     httpStatus?: number;
+    recipient?: string;
+    messageId?: string;
   } | null>(null);
 
   const refreshLogs = () => {
@@ -41,8 +44,11 @@ export const NotificationCenter: React.FC = () => {
     setIsTestingEmail(true);
     setEmailDiagnosticResult(null);
     try {
-      const res = await dataService.testCounsellorEmailTransport();
+      const res = await dataService.testCounsellorEmailTransport(customSmtpRecipient.trim() || undefined);
       setEmailDiagnosticResult(res);
+      if (res.success) {
+        refreshLogs();
+      }
     } catch (e: any) {
       setEmailDiagnosticResult({ success: false, error: e?.message || 'Error executing diagnostic' });
     } finally {
@@ -69,6 +75,12 @@ export const NotificationCenter: React.FC = () => {
         from: 'GamblePause',
       });
       smsStatus = termiiRes.status === 'failed' ? 'Failed' : 'Sent';
+    } else if (testChannel === 'Email') {
+      const emailRes = await dataService.testCounsellorEmailTransport(testRecipient.trim());
+      smsStatus = emailRes.success ? 'Sent' : 'Failed';
+      if (!emailRes.success) {
+        setTestSentNotice(`SMTP Email test result: ${emailRes.error || 'Check SMTP configuration'}`);
+      }
     }
 
     const dummyNotification: NotificationItem = {
@@ -131,7 +143,7 @@ export const NotificationCenter: React.FC = () => {
       {/* Gateway Status Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Counsellor Email API (Vercel Serverless) */}
-        <div className="p-4 rounded-2xl bg-white border border-gray-200 shadow-sm space-y-2 flex flex-col justify-between">
+        <div className="p-4 rounded-2xl bg-white border border-gray-200 shadow-sm space-y-3 flex flex-col justify-between">
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -143,32 +155,86 @@ export const NotificationCenter: React.FC = () => {
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                   : 'bg-purple-50 text-purple-700 border-purple-200'
               }`}>
-                {emailDiagnosticResult?.success ? 'Transport OK' : 'Serverless Function'}
+                {emailDiagnosticResult?.success ? 'SMTP Verified' : 'Vercel Serverless'}
               </span>
             </div>
             <p className="text-xs text-gray-500">
-              Dispatches new assignment & reassignment notifications to counsellors via Gmail SMTP.
+              Dispatches real caseload assignment & reassignment notifications to counsellors via SMTP.
             </p>
           </div>
-          <div className="pt-2 space-y-2">
+
+          <div className="pt-1 space-y-2.5">
+            <div>
+              <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-wider mb-1">
+                Test Recipient (Optional)
+              </label>
+              <input
+                type="email"
+                value={customSmtpRecipient}
+                onChange={(e) => setCustomSmtpRecipient(e.target.value)}
+                placeholder="Defaults to Super Admin"
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
             <button
               type="button"
               onClick={handleTestCounsellorEmail}
               disabled={isTestingEmail}
-              className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer"
+              className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 px-3 py-2 rounded-xl shadow-sm transition-all cursor-pointer"
             >
-              <RefreshCw className={`w-3 h-3 ${isTestingEmail ? 'animate-spin' : ''}`} />
-              <span>{isTestingEmail ? 'Verifying Vercel API...' : 'Test Vercel Email API'}</span>
+              <RefreshCw className={`w-3.5 h-3.5 ${isTestingEmail ? 'animate-spin' : ''}`} />
+              <span>{isTestingEmail ? 'Sending SMTP Test...' : 'Test Counsellor Email API'}</span>
             </button>
-            {emailDiagnosticResult && (
-              <div className={`p-2 rounded-lg text-[10px] border font-mono ${
+
+            {isTestingEmail && (
+              <div className="p-2.5 rounded-xl text-[11px] border bg-purple-50 border-purple-200 text-purple-900 space-y-1 animate-pulse font-mono">
+                <div className="font-bold flex items-center gap-1 text-purple-800">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  <span>SMTP Test</span>
+                </div>
+                <div><strong>Status:</strong> Sending...</div>
+                <div className="text-[10px] text-purple-600">Connecting to SMTP host and dispatching verification message...</div>
+              </div>
+            )}
+
+            {!isTestingEmail && emailDiagnosticResult && (
+              <div className={`p-2.5 rounded-xl text-[11px] border font-mono space-y-1 ${
                 emailDiagnosticResult.success
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-amber-50 border-amber-200 text-amber-900'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-amber-50 border-amber-200 text-amber-950'
               }`}>
-                <div><strong>Status:</strong> {emailDiagnosticResult.httpStatus ? `HTTP ${emailDiagnosticResult.httpStatus}` : (emailDiagnosticResult.success ? 'Success' : 'Notice')}</div>
-                <div><strong>Stage:</strong> {emailDiagnosticResult.stage || 'unknown'}</div>
-                <div className="truncate"><strong>Result:</strong> {emailDiagnosticResult.message || emailDiagnosticResult.error}</div>
+                <div className="font-bold flex items-center justify-between pb-0.5 border-b border-current/10">
+                  <span className="flex items-center gap-1">
+                    {emailDiagnosticResult.success ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    )}
+                    SMTP Test
+                  </span>
+                  <span className="text-[10px] font-bold">
+                    {emailDiagnosticResult.httpStatus ? `HTTP ${emailDiagnosticResult.httpStatus}` : (emailDiagnosticResult.success ? 'HTTP 200' : 'Notice')}
+                  </span>
+                </div>
+                <div>
+                  <strong>Status:</strong>{' '}
+                  <span className={emailDiagnosticResult.success ? 'text-emerald-700 font-bold' : 'text-amber-800 font-bold'}>
+                    {emailDiagnosticResult.success ? 'Sent' : 'Failed'}
+                  </span>
+                </div>
+                <div>
+                  <strong>{emailDiagnosticResult.success ? 'Result:' : 'Reason:'}</strong>{' '}
+                  <span>{emailDiagnosticResult.success ? (emailDiagnosticResult.message || 'Email sent successfully') : (emailDiagnosticResult.error || 'SMTP delivery failed')}</span>
+                </div>
+                {emailDiagnosticResult.recipient && (
+                  <div><strong>Recipient:</strong> <span className="font-semibold text-gray-800">{emailDiagnosticResult.recipient}</span></div>
+                )}
+                {emailDiagnosticResult.messageId && (
+                  <div className="truncate text-[10px] text-gray-500">
+                    <strong>MessageID:</strong> {emailDiagnosticResult.messageId}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -343,6 +409,17 @@ export const NotificationCenter: React.FC = () => {
                           minute: '2-digit',
                         })}
                       </span>
+                      {log.emailStatus && (
+                        <span className={`font-bold px-2 py-0.5 rounded border text-[10px] ${
+                          log.emailStatus === 'sent'
+                            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            : log.emailStatus === 'failed'
+                            ? 'text-red-700 bg-red-50 border-red-200'
+                            : 'text-amber-700 bg-amber-50 border-amber-200'
+                        }`}>
+                          Email: {log.emailStatus}
+                        </span>
+                      )}
                       <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[10px]">
                         {log.status}
                       </span>

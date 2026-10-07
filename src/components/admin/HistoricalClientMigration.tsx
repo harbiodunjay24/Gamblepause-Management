@@ -1445,6 +1445,9 @@ export const HistoricalClientMigration: React.FC<HistoricalClientMigrationProps>
                       className="px-3 py-1.5 rounded-xl border border-gray-200 bg-gray-50 text-xs font-semibold text-gray-700 focus:bg-white focus:outline-none cursor-pointer"
                     >
                       <option value="ALL">All Records ({records.length})</option>
+                      <option value="ELIGIBLE">
+                        Eligible Migration Actions ({summary ? summary.readyToMigrate + (summary.existingToUpdate ?? 0) : 0})
+                      </option>
                       <option value="READY">Ready to Migrate — New ({summary.readyToMigrate})</option>
                       <option value="UPDATE_EXISTING">Existing to Update ({summary.existingToUpdate ?? 0})</option>
                       <option value="NIGERIAN_NON_LAGOS">Nigerian Non-Lagos ({summary.nigerianNonLagosCount ?? 0})</option>

@@ -15,6 +15,7 @@ import {
   Clock,
   Phone,
   Mail,
+  MessageSquare,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { authService } from '../../services/authService';
@@ -117,11 +118,13 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
       return;
     }
 
+    const rawPhone = newCounsellorPhone.trim() || '+234 800 000 0000';
     const newStaff: StaffUser = {
       id: `counsellor-${Date.now()}`,
       name: newCounsellorName.trim(),
       email: newCounsellorEmail.trim().toLowerCase(),
-      phone: newCounsellorPhone.trim() || '+234 800 000 0000',
+      phone: rawPhone,
+      whatsappNumber: rawPhone,
       role: 'Counsellor',
       assignedClientsCount: 0,
       active: true,
@@ -330,12 +333,35 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
                             <Mail className="w-3.5 h-3.5 text-gray-400" />
                             <span>{c.email}</span>
                           </div>
-                          {c.phone && (
-                            <div className="flex items-center gap-1.5 text-gray-500 text-[11px]">
-                              <Phone className="w-3.5 h-3.5 text-gray-400" />
-                              <span>{c.phone}</span>
-                            </div>
-                          )}
+                          {(c.whatsappNumber || c.phone) && (() => {
+                            const raw = c.whatsappNumber || c.phone || '';
+                            const digits = raw.replace(/\D/g, '');
+                            const normalized = digits.startsWith('0') && digits.length === 11
+                              ? '234' + digits.slice(1)
+                              : digits.startsWith('234')
+                              ? digits
+                              : '234' + digits;
+                            return (
+                              <div className="flex items-center gap-2 text-gray-500 text-[11px]">
+                                <span className="flex items-center gap-1">
+                                  <Phone className="w-3.5 h-3.5 text-gray-400" />
+                                  <span>{c.phone || c.whatsappNumber}</span>
+                                </span>
+                                {digits && (
+                                  <a
+                                    href={`https://wa.me/${normalized}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-0.5 font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px]"
+                                    title="Open WhatsApp chat with counsellor"
+                                  >
+                                    <MessageSquare className="w-3 h-3 text-emerald-600" />
+                                    <span>WhatsApp</span>
+                                  </a>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </td>
 

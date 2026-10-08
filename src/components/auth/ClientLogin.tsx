@@ -77,16 +77,20 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
       <div className="max-w-md mx-auto w-full my-auto">
         <div className="bg-white border border-gray-200 rounded-3xl p-6 sm:p-8 shadow-md">
           {/* Header */}
-          <div className="text-center space-y-2 mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-red-600 text-white flex items-center justify-center mx-auto shadow-sm font-black text-xl">
-              GP
+          <div className="text-center space-y-2 mb-6 flex flex-col items-center">
+            <img
+              src="/icon.svg"
+              alt="GamblePause Africa Logo"
+              className="w-16 h-16 object-contain rounded-2xl shadow-md border border-red-100 mx-auto"
+            />
+            <div className="inline-flex items-center gap-1.5 pt-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-red-700 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                AFRICA
+              </span>
+              <span className="text-xs font-bold text-gray-800">
+                Client Recovery & Assessment Portal
+              </span>
             </div>
-            <h1 className="text-2xl font-black text-gray-950 tracking-tight">
-              GAMBLE<span className="text-red-600">PAUSE</span>
-            </h1>
-            <p className="text-xs font-bold text-gray-800">
-              Client Recovery & Assessment Portal
-            </p>
             <p className="text-xs text-gray-500">
               Sign in with your registered email and password to access your recovery portal.
             </p>

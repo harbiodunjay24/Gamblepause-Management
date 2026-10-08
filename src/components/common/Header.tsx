@@ -59,9 +59,11 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center gap-3 cursor-pointer group"
           id="brand-logo-button"
         >
-          <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center font-black text-lg shadow-md shadow-red-600/20 group-hover:bg-red-700 transition-colors">
-            GP
-          </div>
+          <img
+            src="/icon.svg"
+            alt="GamblePause Logo"
+            className="w-10 h-10 rounded-xl shadow-md shadow-red-600/20 group-hover:scale-105 transition-transform object-contain"
+          />
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-black tracking-tight text-gray-950 text-base sm:text-lg">

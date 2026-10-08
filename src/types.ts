@@ -15,6 +15,7 @@ export interface StaffUser {
   email: string;
   role: UserRole;
   phone?: string;
+  whatsappNumber?: string; // Direct counsellor WhatsApp line
   assignedClientsCount: number;
   active: boolean;
   status?: 'Active' | 'Inactive' | 'Archived' | 'Deactivated';
@@ -44,6 +45,9 @@ export interface Client {
   emergencyContactRelationship?: string;
   consentGiven: boolean;
   registrationDate: string; // ISO date string
+  createdAt?: string; // Authoritative client creation timestamp
+  registeredAt?: string; // Alternative registration timestamp alias
+  created_at?: string;
   status: ClientStatus;
   currentStageId: string;
   currentStageName: string;
@@ -171,6 +175,7 @@ export interface AssessmentSubmission {
   scoreRiskLevel?: 'Low' | 'Medium' | 'High' | 'Severe';
   status: 'Completed' | 'Under Review' | 'Flagged';
   counsellorNotes?: string;
+  version?: number; // Schema version of form at submission time
   isDemo?: boolean;
 }
 

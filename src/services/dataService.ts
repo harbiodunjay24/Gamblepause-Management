@@ -1160,9 +1160,9 @@ class DataService {
 
     // Ensure the 3 real GamblePause counsellors are present as Active counsellors
     const realCounsellors = [
-      { id: 'counsellor-benjamin', name: 'Benjamin', email: 'benjamin@gamblepause.org', phone: '+234 809 111 2233' },
-      { id: 'counsellor-micheal', name: 'Micheal Akinniku', email: 'micheal.akinniku@gamblepause.org', phone: '+234 812 333 4455' },
-      { id: 'counsellor-celia', name: 'Celia Badmus', email: 'celia.badmus@gamblepause.org', phone: '+234 818 555 6677' },
+      { id: 'counsellor-benjamin', name: 'Benjamin', email: 'benjamin@gamblepause.org', phone: '+234 809 111 2233', whatsappNumber: '+234 809 111 2233' },
+      { id: 'counsellor-micheal', name: 'Micheal Akinniku', email: 'micheal.akinniku@gamblepause.org', phone: '+234 812 333 4455', whatsappNumber: '+234 812 333 4455' },
+      { id: 'counsellor-celia', name: 'Celia Badmus', email: 'celia.badmus@gamblepause.org', phone: '+234 818 555 6677', whatsappNumber: '+234 818 555 6677' },
     ];
 
     for (const rc of realCounsellors) {
@@ -1173,6 +1173,7 @@ class DataService {
           name: rc.name,
           email: rc.email,
           phone: rc.phone,
+          whatsappNumber: rc.whatsappNumber,
           role: 'Counsellor',
           assignedClientsCount: 0,
           active: true,
@@ -1181,6 +1182,9 @@ class DataService {
         this.staff[idx].name = rc.name;
         this.staff[idx].role = 'Counsellor';
         this.staff[idx].active = this.staff[idx].active !== false;
+        if (!this.staff[idx].whatsappNumber) {
+          this.staff[idx].whatsappNumber = rc.whatsappNumber;
+        }
       }
     }
   }
@@ -1726,6 +1730,8 @@ class DataService {
       id: clientId,
       ...biodata,
       registrationDate: existingClient?.registrationDate || now,
+      createdAt: existingClient?.createdAt || now,
+      registeredAt: existingClient?.registeredAt || now,
       status: 'Active',
       currentStageId: existingClient?.currentStageId || initialStage?.id || 'stage-assessment-1',
       currentStageName: existingClient?.currentStageName || initialStage?.stageName || 'Assessment 1.0',
@@ -3549,31 +3555,35 @@ class DataService {
     const clientIds = new Set(clientPool.map((c) => c.id));
     const submissionPool = this.submissions.filter((s) => clientIds.has(s.clientId));
 
-    const today = new Date();
-    today.setHours(23, 59, 59, 999);
-
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
     const totalClients = clientPool.length;
-    const activeClients = clientPool.filter((c) => c.status === 'Active').length;
-    const newClients = clientPool.filter((c) => new Date(c.registrationDate) >= sevenDaysAgo).length;
 
-    const assessmentsDueToday = clientPool.filter((c) => {
-      if (!c.nextAssessmentDueDate || c.status === 'Completed' || c.status === 'Closed') return false;
+    // 1. Active Clients: participating in pathway, not completed / closed / archived / finished all 6 stages
+    const activeClientsCohort = clientPool.filter(isClientActiveInPathway);
+    const activeClients = activeClientsCohort.length;
+
+    // 2. New (7 Days): original client registration/creation date occurred within the rolling 7 days
+    const newClients = clientPool.filter(isClientNewInLast7Days).length;
+
+    // 3. Due Today: calculated from active cohort
+    const assessmentsDueToday = activeClientsCohort.filter((c) => {
+      if (!c.nextAssessmentDueDate) return c.status === 'Assessment Due';
       const d = new Date(c.nextAssessmentDueDate);
       const isToday = d.toDateString() === new Date().toDateString();
       return isToday || c.status === 'Assessment Due';
     }).length;
 
-    const overdueAssessments = clientPool.filter((c) => {
+    // 4. Overdue: calculated from active cohort
+    const overdueAssessments = activeClientsCohort.filter((c) => {
       if (c.status === 'Overdue') return true;
-      if (!c.nextAssessmentDueDate || c.status === 'Completed' || c.status === 'Closed') return false;
-      return new Date(c.nextAssessmentDueDate).getTime() < new Date().getTime();
+      if (!c.nextAssessmentDueDate) return false;
+      return new Date(c.nextAssessmentDueDate).getTime() < Date.now();
     }).length;
 
+    // 5. Completed assessments
     const completedAssessments = submissionPool.length;
-    const clientsRequiringFollowup = clientPool.filter(
+
+    // 6. High Priority: calculated ONLY from the CURRENT ACTIVE CLIENT COHORT
+    const clientsRequiringFollowup = activeClientsCohort.filter(
       (c) => c.riskLevel === 'High' || c.status === 'Overdue' || c.status === 'Assessment Due'
     ).length;
 
@@ -3587,6 +3597,77 @@ class DataService {
       clientsRequiringFollowup,
     };
   }
+}
+
+/**
+ * Authoritative check if a client is an active participant in the clinical pathway.
+ * Inactive / Completed clients (Completed, Archived, Deactivated, Withdrawn, Closed, or completed all 6 canonical stages)
+ * are excluded from operational active metrics and high-priority follow-up queues.
+ */
+export function isClientActiveInPathway(client: Client): boolean {
+  if (!client) return false;
+
+  const status = (client.status || '').toLowerCase().trim();
+  const inactiveStatuses = ['completed', 'archived', 'deactivated', 'withdrawn', 'closed', 'inactive', 'referred'];
+  if (inactiveStatuses.includes(status)) {
+    return false;
+  }
+
+  // Canonical clinical pathway completion: clients who have completed all six stages
+  // (Assessment 1.0, 2.0, 3.0, 4.0, 5.0, and Client Feedback)
+  if (typeof client.totalAssessmentsCompleted === 'number' && client.totalAssessmentsCompleted >= 6) {
+    return false;
+  }
+
+  if (client.currentStageId === 'stage-completed' || client.currentStageName === 'Completed') {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if a client is a historical migrated record without an authentic source registration date.
+ */
+export function isHistoricalMigratedClient(client: Client): boolean {
+  if (!client) return false;
+  if (client.result && client.result.toLowerCase().includes('historical')) return true;
+  if (client.howHeard && client.howHeard.toLowerCase().includes('historical')) return true;
+  if (client.status === 'Completed' && typeof client.totalAssessmentsCompleted === 'number' && client.totalAssessmentsCompleted >= 6 && client.result?.includes('Migration')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Authoritative check if client's ORIGINAL registration / creation date occurred within the rolling 7-day window.
+ * Strictly checks authentic registration timestamps (createdAt, registeredAt, registrationDate, created_at)
+ * and does NOT substitute migration import dates, assessment dates, or update timestamps.
+ */
+export function isClientNewInLast7Days(client: Client): boolean {
+  if (!client) return false;
+
+  // Historical migrated clients with no original registration date in the source spreadsheet
+  // must NOT be counted as newly registered.
+  if (isHistoricalMigratedClient(client)) {
+    return false;
+  }
+
+  // Authoritative date field lookup
+  const dateStr = client.createdAt || client.registeredAt || client.registrationDate || client.created_at;
+  if (!dateStr || typeof dateStr !== 'string') {
+    return false;
+  }
+
+  const regTimestamp = new Date(dateStr).getTime();
+  if (isNaN(regTimestamp)) {
+    return false;
+  }
+
+  const now = Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+  return regTimestamp <= now && regTimestamp >= (now - sevenDaysMs);
 }
 
 export const dataService = new DataService();

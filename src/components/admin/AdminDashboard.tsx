@@ -15,7 +15,7 @@ import {
   PhoneCall,
   Activity,
 } from 'lucide-react';
-import { dataService } from '../../services/dataService';
+import { dataService, isClientActiveInPathway, isHistoricalMigratedClient } from '../../services/dataService';
 import { NotificationService } from '../../services/notificationService';
 import { Client, StaffUser } from '../../types';
 import { NIGERIAN_STATES } from '../../data/demoData';
@@ -141,8 +141,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 7. Timeframe filter (AND logic)
       if (dateRange !== 'all') {
-        const regTime = new Date(c.registrationDate).getTime();
-        const now = new Date().getTime();
+        if (isHistoricalMigratedClient(c)) {
+          return false;
+        }
+        const regDateStr = c.createdAt || c.registeredAt || c.registrationDate || c.created_at;
+        if (!regDateStr) return false;
+        const regTime = new Date(regDateStr).getTime();
+        if (isNaN(regTime)) return false;
+        const now = Date.now();
         const days = (now - regTime) / (1000 * 3600 * 24);
         if (dateRange === '7d' && days > 7) return false;
         if (dateRange === '30d' && days > 30) return false;
@@ -192,9 +198,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [filteredClients]);
 
   // Overdue and Priority Follow-up Clients derived directly from filteredClients
+  // Calculated ONLY from the CURRENT ACTIVE CLIENT COHORT
+  // Clients who completed all 6 stages (or are completed/inactive) never appear here
   const priorityClients = useMemo(() => {
     return filteredClients
-      .filter((c) => c.status === 'Overdue' || c.status === 'Assessment Due' || c.riskLevel === 'High')
+      .filter((c) => isClientActiveInPathway(c) && (c.status === 'Overdue' || c.status === 'Assessment Due' || c.riskLevel === 'High'))
       .slice(0, 5);
   }, [filteredClients]);
 

@@ -14,6 +14,7 @@ import {
   Clock,
   Shield,
   CheckCircle2,
+  MessageSquare,
 } from 'lucide-react';
 import { Client, ClientStatus, StaffUser } from '../../types';
 import { dataService } from '../../services/dataService';
@@ -413,10 +414,36 @@ export const ClientList: React.FC<ClientListProps> = ({
 
                       {/* Assigned Counsellor */}
                       <td className="py-4 px-4">
-                        <div className="font-medium text-gray-900">
-                          {client.assignedCounsellorName || (
-                            <span className="text-gray-400 italic">Unassigned</span>
-                          )}
+                        <div className="font-medium text-gray-900 flex items-center gap-1.5">
+                          <span>
+                            {client.assignedCounsellorName || (
+                              <span className="text-gray-400 italic">Unassigned</span>
+                            )}
+                          </span>
+                          {(() => {
+                            if (!client.assignedCounsellorId) return null;
+                            const counsellor = staff.find((s) => s.id === client.assignedCounsellorId);
+                            const rawPhone = counsellor?.whatsappNumber || counsellor?.phone;
+                            if (!rawPhone) return null;
+                            const digits = rawPhone.replace(/\D/g, '');
+                            const normalized = digits.startsWith('0') && digits.length === 11
+                              ? '234' + digits.slice(1)
+                              : digits.startsWith('234')
+                              ? digits
+                              : '234' + digits;
+                            return (
+                              <a
+                                href={`https://wa.me/${normalized}?text=${encodeURIComponent(`Hello ${counsellor?.name || 'Counsellor'},\n\nRegarding client: ${client.firstName} ${client.lastName} (${client.id})\nStage: ${client.currentStageName}\nStatus: ${client.status}`)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="p-1 rounded text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 transition-colors"
+                                title={`WhatsApp ${counsellor?.name} regarding this client`}
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </td>
 

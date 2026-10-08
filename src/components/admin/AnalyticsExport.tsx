@@ -20,7 +20,7 @@ import {
   HelpCircle,
   ChevronRight,
 } from 'lucide-react';
-import { dataService } from '../../services/dataService';
+import { dataService, isHistoricalMigratedClient } from '../../services/dataService';
 import { StaffUser, ClientStatus, Client } from '../../types';
 import { NIGERIAN_STATES } from '../../data/demoData';
 import {
@@ -139,10 +139,16 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
         }
       }
 
-      // Date range filter based on registrationDate (AND logic)
+      // Date range filter based on authoritative registration timestamp (AND logic)
       if (dateRange !== 'all') {
-        const now = new Date().getTime();
-        const regTime = new Date(client.registrationDate).getTime();
+        if (isHistoricalMigratedClient(client)) {
+          return false;
+        }
+        const regDateStr = client.createdAt || client.registeredAt || client.registrationDate || client.created_at;
+        if (!regDateStr) return false;
+        const regTime = new Date(regDateStr).getTime();
+        if (isNaN(regTime)) return false;
+        const now = Date.now();
         const diffDays = (now - regTime) / (1000 * 3600 * 24);
         if (dateRange === '30d' && diffDays > 30) return false;
         if (dateRange === '90d' && diffDays > 90) return false;

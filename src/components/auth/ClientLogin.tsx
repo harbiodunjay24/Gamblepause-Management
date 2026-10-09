@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, User, AlertCircle, ArrowLeft, Eye, EyeOff, Shield, HeartHandshake, CheckCircle2, UserPlus, LogIn } from 'lucide-react';
 import { authService, AuthUser } from '../../services/authService';
+import { GamblePauseLogo } from '../common/GamblePauseLogo';
 
 interface ClientLoginProps {
   onLoginSuccess: (user: AuthUser) => void;
@@ -76,24 +77,9 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
       {/* Main Login/Register Card */}
       <div className="max-w-md mx-auto w-full my-auto">
         <div className="bg-white border border-gray-200 rounded-3xl p-6 sm:p-8 shadow-md">
-          {/* Header */}
-          <div className="text-center space-y-2 mb-6 flex flex-col items-center">
-            <img
-              src="/icon.svg"
-              alt="GamblePause Africa Logo"
-              className="w-16 h-16 object-contain rounded-2xl shadow-md border border-red-100 mx-auto"
-            />
-            <div className="inline-flex items-center gap-1.5 pt-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-red-700 bg-red-50 px-2 py-0.5 rounded border border-red-200">
-                AFRICA
-              </span>
-              <span className="text-xs font-bold text-gray-800">
-                Client Recovery & Assessment Portal
-              </span>
-            </div>
-            <p className="text-xs text-gray-500">
-              Sign in with your registered email and password to access your recovery portal.
-            </p>
+          {/* Header: Logo Only */}
+          <div className="text-center mb-6 flex flex-col items-center">
+            <GamblePauseLogo size="lg" className="mx-auto" />
           </div>
 
           {/* Error Message */}

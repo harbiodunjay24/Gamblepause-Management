@@ -37,15 +37,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   useEffect(() => {
     let isMounted = true;
 
-    async function loadClientRecord() {
-      setIsLoading(true);
+    async function loadClientRecord(showLoadingSpinner: boolean = false) {
+      if (showLoadingSpinner) {
+        setIsLoading(true);
+      }
       const authUid = auth.currentUser?.uid || user.id;
 
       let foundClient: Client | undefined = undefined;
 
       // 1. Authoritative lookup: query Firestore for where client.authUid == auth.currentUser.uid
       if (authUid) {
-        foundClient = await dataService.getClientByAuthUid(authUid);
+        try {
+          foundClient = await dataService.getClientByAuthUid(authUid);
+        } catch (err) {
+          console.warn('[ClientPortal] Authoritative client lookup notice:', err);
+        }
       }
 
       // 2. Fallback by user.clientId if not resolved by authUid
@@ -54,17 +60,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       }
 
       if (isMounted) {
-        setClient(foundClient || null);
+        if (foundClient) {
+          setClient(foundClient);
+        } else if (showLoadingSpinner) {
+          // Only nullify client if initial load truly yielded no record
+          setClient(null);
+        }
         setWorkflows(dataService.getWorkflows(false));
         setForms(dataService.getForms());
         setIsLoading(false);
       }
     }
 
-    loadClientRecord();
+    // Initial load displays loading spinner
+    loadClientRecord(true);
 
+    // Real-time background sync updates silently without unmounting the view
     const unsub = dataService.subscribe(() => {
-      loadClientRecord();
+      loadClientRecord(false);
     });
 
     return () => {

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ShieldCheck, Lock, User, AlertCircle, ArrowLeft, Eye, EyeOff, Shield, Mail, CheckCircle2 } from 'lucide-react';
 import { authService, AuthUser } from '../../services/authService';
+import { GamblePauseLogo } from '../common/GamblePauseLogo';
 
 interface AdminLoginProps {
   onLoginSuccess: (user: AuthUser) => void;
@@ -108,24 +109,9 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
       {/* Main Card */}
       <div className="max-w-md mx-auto w-full my-auto">
         <div className="bg-white border border-gray-200 rounded-3xl p-6 sm:p-8 shadow-md">
-          {/* Brand Header */}
-          <div className="text-center space-y-2 mb-6 flex flex-col items-center">
-            <img
-              src="/icon.svg"
-              alt="GamblePause Africa Logo"
-              className="w-16 h-16 object-contain rounded-2xl shadow-md border border-red-100 mx-auto"
-            />
-            <div className="inline-flex items-center gap-1.5 pt-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-red-700 bg-red-50 px-2 py-0.5 rounded border border-red-200">
-                AFRICA
-              </span>
-              <span className="text-xs font-bold text-gray-700">
-                Staff & Counsellor Portal
-              </span>
-            </div>
-            <p className="text-xs text-gray-500">
-              Authorized clinical and administrative access only.
-            </p>
+          {/* Brand Header: Logo Only */}
+          <div className="text-center mb-6 flex flex-col items-center">
+            <GamblePauseLogo size="lg" className="mx-auto" />
           </div>
 
           {!isResetMode ? (

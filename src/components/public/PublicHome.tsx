@@ -1,5 +1,6 @@
 import React from 'react';
 import { ShieldCheck, ArrowRight, Lock, PhoneCall, FileText, Shield } from 'lucide-react';
+import { GamblePauseLogo } from '../common/GamblePauseLogo';
 
 interface PublicHomeProps {
   onStartIntake: () => void;
@@ -27,29 +28,10 @@ export const PublicHome: React.FC<PublicHomeProps> = ({
 
       {/* Main Container */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-12 sm:py-20 flex flex-col items-center justify-center">
-        {/* Brand Header */}
-        <div className="text-center space-y-4 max-w-2xl flex flex-col items-center">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-red-50 border border-red-200 text-red-700 text-xs font-bold uppercase tracking-wider">
-            <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
-            <span>GamblePause Client Management & Assessment System</span>
-          </div>
-
-          {/* Company Logo Asset (Replaces text wordmark GAMBLEPAUSE) */}
-          <div className="flex flex-col items-center justify-center my-2">
-            <img
-              src="/icon.svg"
-              alt="GamblePause Africa Logo"
-              className="w-24 h-24 sm:w-28 sm:h-28 object-contain rounded-3xl shadow-xl shadow-red-600/25 border-2 border-red-100"
-            />
-            <div className="inline-flex items-center gap-1.5 mt-3">
-              <span className="text-xs font-black uppercase tracking-widest text-red-700 bg-red-50 px-2.5 py-0.5 rounded-full border border-red-200">
-                AFRICA
-              </span>
-              <span className="text-xs text-gray-400 font-semibold">•</span>
-              <span className="text-xs font-bold text-gray-600">
-                Client Management & Assessment System
-              </span>
-            </div>
+        {/* Brand Header: Logo Only */}
+        <div className="text-center space-y-5 max-w-2xl flex flex-col items-center">
+          <div className="flex justify-center my-2">
+            <GamblePauseLogo size="hero" alt="GamblePause Official Logo" />
           </div>
 
           <p className="text-xl sm:text-2xl text-gray-900 font-bold">

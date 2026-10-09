@@ -28,6 +28,7 @@ import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 import {
   doc,
   updateDoc,
+  deleteDoc,
   collection,
   addDoc,
   setDoc,
@@ -478,52 +479,53 @@ class DataService {
         const staffId = staffMember?.id;
         const counsellorName = user.name || staffMember?.name;
 
+        // Execute queries concurrently in parallel rather than sequentially
+        const queryPromises: Promise<any>[] = [];
+
         // Query 1: by assignedCounsellorId == user.id (Auth UID)
-        try {
-          const qId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', user.id));
-          const snapId = await getDocs(qId);
-          snapId.forEach((docSnap) => {
-            const data = docSnap.data() as Client;
-            if (data && data.id) {
-              firestoreClientsMap.set(data.id, { ...data, isDemo: false });
-            }
-          });
-        } catch (e: any) {
-          console.warn('[DataService] Counsellor query by assignedCounsellorId notice:', e?.message || e);
-        }
+        const qId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', user.id));
+        queryPromises.push(
+          getDocs(qId).then((snapId) => {
+            snapId.forEach((docSnap) => {
+              const data = docSnap.data() as Client;
+              if (data && data.id) {
+                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+              }
+            });
+          }).catch((e) => console.warn('[DataService] Counsellor query by assignedCounsellorId notice:', e?.message || e))
+        );
 
         // Query 2: by assignedCounsellorName == counsellorName
-        // Authorized by firestore.rules: resource.data.assignedCounsellorName == getUserData().name
         if (counsellorName) {
-          try {
-            const qName = query(collection(db, 'clients'), where('assignedCounsellorName', '==', counsellorName));
-            const snapName = await getDocs(qName);
-            snapName.forEach((docSnap) => {
-              const data = docSnap.data() as Client;
-              if (data && data.id) {
-                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
-              }
-            });
-          } catch (e: any) {
-            console.warn('[DataService] Counsellor query by assignedCounsellorName notice:', e?.message || e);
-          }
+          const qName = query(collection(db, 'clients'), where('assignedCounsellorName', '==', counsellorName));
+          queryPromises.push(
+            getDocs(qName).then((snapName) => {
+              snapName.forEach((docSnap) => {
+                const data = docSnap.data() as Client;
+                if (data && data.id) {
+                  firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+                }
+              });
+            }).catch((e) => console.warn('[DataService] Counsellor query by assignedCounsellorName notice:', e?.message || e))
+          );
         }
 
-        // Query 3: by assignedCounsellorId == staffId (e.g. counsellor-benjamin) if distinct from user.id
+        // Query 3: by assignedCounsellorId == staffId if distinct from user.id
         if (staffId && staffId !== user.id) {
-          try {
-            const qStaffId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', staffId));
-            const snapStaffId = await getDocs(qStaffId);
-            snapStaffId.forEach((docSnap) => {
-              const data = docSnap.data() as Client;
-              if (data && data.id) {
-                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
-              }
-            });
-          } catch {
-            // Safely ignored if security rules enforce Auth UID
-          }
+          const qStaffId = query(collection(db, 'clients'), where('assignedCounsellorId', '==', staffId));
+          queryPromises.push(
+            getDocs(qStaffId).then((snapStaffId) => {
+              snapStaffId.forEach((docSnap) => {
+                const data = docSnap.data() as Client;
+                if (data && data.id) {
+                  firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+                }
+              });
+            }).catch(() => {})
+          );
         }
+
+        await Promise.allSettled(queryPromises);
 
         const firestoreClients = Array.from(firestoreClientsMap.values());
         this.mergeFirestoreClients(firestoreClients);
@@ -537,37 +539,11 @@ class DataService {
       return;
     }
 
-    // Super Admin: authoritative retrieval of all clients
+    // Super Admin: authoritative retrieval of all clients with real-time listener (avoids redundant duplicate reads)
     try {
       const clientsCol = collection(db, 'clients');
-      let snap;
-      try {
-        snap = await getDocsFromServer(clientsCol);
-      } catch {
-        snap = await getDocs(clientsCol);
-      }
 
-      const firestoreClients: Client[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as Client;
-        if (data && data.id) {
-          firestoreClients.push({
-            ...data,
-            isDemo: false,
-          });
-        }
-      });
-
-      this.clients = firestoreClients.sort((a, b) => {
-        const timeA = new Date(a.registrationDate).getTime() || 0;
-        const timeB = new Date(b.registrationDate).getTime() || 0;
-        return timeB - timeA;
-      });
-      this.authoritativeLoaded = true;
-      this.saveToStorage();
-      this.notify();
-
-      // Refresh real-time snapshot listener
+      // Refresh real-time snapshot listener (single authoritative read path)
       if (this.firestoreClientsUnsubscribe) {
         this.firestoreClientsUnsubscribe();
         this.firestoreClientsUnsubscribe = null;
@@ -2242,6 +2218,235 @@ class DataService {
     return this.setStaffStatus(counsellorId, active);
   }
 
+  /**
+   * Super Admin permanent deletion of a client record.
+   * Requires explicit confirmation identifier matching the Client ID.
+   * Preserves immutable audit log before deletion.
+   * Deletes Firestore client document and attempts server-side Firebase Auth account deletion.
+   */
+  public async deleteClientPermanent(
+    clientId: string,
+    confirmationId: string
+  ): Promise<{ success: boolean; error?: string; authDeleted?: boolean; message?: string }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can permanently delete client records.' };
+    }
+
+    const cleanClientId = clientId.trim().toUpperCase();
+    const cleanConfirm = confirmationId.trim().toUpperCase();
+
+    if (cleanClientId !== cleanConfirm) {
+      return {
+        success: false,
+        error: `Confirmation mismatch: You must type the exact Client ID "${cleanClientId}" to permanently delete this record.`,
+      };
+    }
+
+    const client = this.clients.find((c) => c.id.toUpperCase() === cleanClientId);
+    if (!client) {
+      return { success: false, error: `Client "${clientId}" not found in current records.` };
+    }
+
+    const clientName = `${client.firstName} ${client.lastName}`.trim();
+    const authUid = client.authUid;
+
+    // 1. Immutable Audit Log BEFORE deletion
+    this.logAudit(
+      'PERMANENT_DELETE_CLIENT',
+      'Client',
+      client.id,
+      `Permanently deleted client record "${clientName}" (${client.id}) by Super Admin "${user.name}" (${user.email}).`
+    );
+
+    // 2. Delete Firestore client document
+    if (db && isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'clients', client.id));
+      } catch (err: any) {
+        console.error('[dataService] Firestore deleteDoc error:', err);
+        return { success: false, error: `Firestore deletion error: ${err?.message || err}` };
+      }
+    }
+
+    // 3. Attempt server-side Firebase Authentication account deletion
+    let authDeleted: boolean | undefined = undefined;
+    if (authUid) {
+      try {
+        let idToken = '';
+        if (auth.currentUser) {
+          idToken = await auth.currentUser.getIdToken();
+        }
+        const res = await fetch('/api/admin/delete-auth-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
+          body: JSON.stringify({ authUid, targetType: 'client', clientId: client.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success && data.authDeleted) {
+          authDeleted = true;
+        } else {
+          authDeleted = false;
+        }
+      } catch {
+        authDeleted = false;
+      }
+    }
+
+    // 4. Clean up in-memory & local state
+    this.clients = this.clients.filter((c) => c.id !== client.id);
+    this.submissions = this.submissions.filter((s) => s.clientId !== client.id);
+    this.caseNotes = this.caseNotes.filter((n) => n.clientId !== client.id);
+    this.counsellorAssignments = this.counsellorAssignments.filter((a) => a.clientId !== client.id);
+    this.notifications = this.notifications.filter((n) => n.clientId !== client.id);
+
+    this.saveToStorage();
+    this.notify();
+
+    let message = `Client record "${clientName}" (${client.id}) has been permanently deleted from Cloud Firestore.`;
+    if (authUid) {
+      if (authDeleted === true) {
+        message += ' Associated Firebase Authentication account was also deleted.';
+      } else {
+        message += ' Note: Firebase Authentication account could not be deleted automatically and should be reviewed in the Firebase Console.';
+      }
+    }
+
+    return {
+      success: true,
+      authDeleted,
+      message,
+    };
+  }
+
+  /**
+   * Super Admin permanent deletion of a counsellor / staff record.
+   * Requires explicit confirmation identifier matching counsellor name, email, or ID.
+   * Reassigns or unassigns active clients to prevent orphaned caseloads.
+   * Deletes staff record and associated users/{authUid} document.
+   */
+  public async deleteCounsellorPermanent(
+    staffId: string,
+    confirmationText: string,
+    reassignToCounsellorId?: string
+  ): Promise<{ success: boolean; error?: string; authDeleted?: boolean; message?: string }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can permanently delete staff accounts.' };
+    }
+
+    const member = this.staff.find((s) => s.id === staffId);
+    if (!member) {
+      return { success: false, error: 'Staff member not found.' };
+    }
+
+    const cleanConfirm = confirmationText.trim().toLowerCase();
+    const matchesName = member.name.trim().toLowerCase() === cleanConfirm;
+    const matchesEmail = member.email.trim().toLowerCase() === cleanConfirm;
+    const matchesId = member.id.trim().toLowerCase() === cleanConfirm;
+
+    if (!matchesName && !matchesEmail && !matchesId) {
+      return {
+        success: false,
+        error: `Confirmation mismatch: You must type "${member.name}" or "${member.email}" to confirm deletion.`,
+      };
+    }
+
+    // Handle assigned clients: reassign if new counsellor provided, or unassign
+    const assignedClients = this.clients.filter((c) => c.assignedCounsellorId === member.id || (member.authUid && c.assignedCounsellorId === member.authUid));
+    if (assignedClients.length > 0) {
+      if (reassignToCounsellorId && reassignToCounsellorId !== member.id) {
+        for (const cl of assignedClients) {
+          await this.assignCounsellor(cl.id, reassignToCounsellorId, `Automated reassignment due to deletion of counsellor ${member.name}`);
+        }
+      } else {
+        for (const cl of assignedClients) {
+          cl.assignedCounsellorId = undefined;
+          cl.assignedCounsellorName = undefined;
+          if (db && isFirebaseConfigured) {
+            await updateDoc(doc(db, 'clients', cl.id), {
+              assignedCounsellorId: null,
+              assignedCounsellorName: null,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+
+    // 1. Audit Log BEFORE deletion
+    this.logAudit(
+      'PERMANENT_DELETE_STAFF',
+      'Staff',
+      member.id,
+      `Permanently deleted staff/counsellor "${member.name}" (${member.email}) by Super Admin "${user.name}". ${assignedClients.length} assigned clients handled.`
+    );
+
+    // 2. Delete Firestore staff document and users document
+    if (db && isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'staff', member.id));
+        if (member.authUid) {
+          await deleteDoc(doc(db, 'users', member.authUid)).catch(() => {});
+        }
+      } catch (err: any) {
+        return { success: false, error: `Firestore deletion error: ${err?.message || err}` };
+      }
+    }
+
+    // 3. Attempt server-side auth account deletion
+    let authDeleted: boolean | undefined = undefined;
+    const targetUid = member.authUid;
+    if (targetUid) {
+      try {
+        let idToken = '';
+        if (auth.currentUser) {
+          idToken = await auth.currentUser.getIdToken();
+        }
+        const res = await fetch('/api/admin/delete-auth-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
+          body: JSON.stringify({ authUid: targetUid, targetType: 'staff', staffId: member.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success && data.authDeleted) {
+          authDeleted = true;
+        } else {
+          authDeleted = false;
+        }
+      } catch {
+        authDeleted = false;
+      }
+    }
+
+    // 4. Remove from in-memory staff list
+    this.staff = this.staff.filter((s) => s.id !== member.id);
+    authService.deleteStaffAccount(member.id);
+
+    this.saveToStorage();
+    this.notify();
+
+    let message = `Counsellor "${member.name}" was permanently deleted.`;
+    if (targetUid) {
+      if (authDeleted === true) {
+        message += ' Firebase Authentication account was also deleted.';
+      } else {
+        message += ' Note: Firebase Auth account could not be deleted automatically and should be reviewed in the Firebase Console.';
+      }
+    }
+
+    return {
+      success: true,
+      authDeleted,
+      message,
+    };
+  }
+
   public getCounsellorNotifications(counsellorId?: string, counsellorName?: string): NotificationLog[] {
     const user = authService.getCurrentUser();
     const targetId = counsellorId || user?.id;
@@ -3606,6 +3811,11 @@ class DataService {
  */
 export function isClientActiveInPathway(client: Client): boolean {
   if (!client) return false;
+
+  // Explicit active/deactivation flags check
+  if ((client as any).active === false || (client as any).isDeactivated === true || (client as any).deactivated === true) {
+    return false;
+  }
 
   const status = (client.status || '').toLowerCase().trim();
   const inactiveStatuses = ['completed', 'archived', 'deactivated', 'withdrawn', 'closed', 'inactive', 'referred'];

@@ -134,6 +134,13 @@ export default function App() {
           setCurrentRoute('counsellor-portal');
         } else {
           setCurrentRoute('admin-portal');
+          const clientIdParam = params.get('client') || params.get('clientId');
+          if (clientIdParam) {
+            const cl = dataService.getClientById(clientIdParam);
+            if (cl) {
+              setSelectedClientForProfile(cl);
+            }
+          }
         }
       } else {
         setCurrentRoute('admin-login');
@@ -162,6 +169,11 @@ export default function App() {
     // Subscribe to dataService updates (e.g. real-time Firestore sync across devices)
     const unsubData = dataService.subscribe(() => {
       setRenderTrigger((v) => v + 1);
+      // Synchronize currently open client profile without closing it on data updates
+      setSelectedClientForProfile((prev) => {
+        if (!prev) return null;
+        return dataService.getClientById(prev.id) || prev;
+      });
     });
 
     return () => {
@@ -206,10 +218,25 @@ export default function App() {
     setCurrentRoute(route);
   };
 
+  const handleSelectClientForProfile = (client: Client | null) => {
+    setSelectedClientForProfile(client);
+    try {
+      const url = new URL(window.location.href);
+      if (client) {
+        url.searchParams.set('client', client.id);
+      } else {
+        url.searchParams.delete('client');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Ignore in constrained iframe environments
+    }
+  };
+
   const handleLogout = () => {
     authService.logout();
     setCurrentUser(null);
-    setSelectedClientForProfile(null);
+    handleSelectClientForProfile(null);
     setActiveClientAssessmentFormId(null);
     navigateTo('home');
   };
@@ -238,9 +265,9 @@ export default function App() {
 
   // Convert AuthUser to StaffUser for admin components that require StaffUser props
   const staffUser: StaffUser = {
-    id: currentUser?.id || 'staff-superadmin',
-    name: currentUser?.name || 'Abiodun Ayodeji',
-    email: currentUser?.email || 'ayodejiharbiodun24@gmail.com',
+    id: currentUser?.id || 'staff-admin',
+    name: currentUser?.name || 'Administrator',
+    email: currentUser?.email || 'admin@gamblepause.org',
     role: (currentUser?.role as any) || 'Super Admin',
     assignedClientsCount: 0,
     active: true,
@@ -425,7 +452,7 @@ export default function App() {
             <ClientProfile
               client={selectedClientForProfile}
               currentUser={staffUser}
-              onBack={() => setSelectedClientForProfile(null)}
+              onBack={() => handleSelectClientForProfile(null)}
               onOpenAssessmentAsClient={(c) => {
                 const token = dataService.getAssessmentToken(c.id, c.nextAssessmentId || 'form-recovery-1');
                 if (token) {
@@ -473,7 +500,7 @@ export default function App() {
               {adminTab === 'dashboard' && (
                 <AdminDashboard
                   currentUser={staffUser}
-                  onSelectClient={(c) => setSelectedClientForProfile(c)}
+                  onSelectClient={(c) => handleSelectClientForProfile(c)}
                   onNavigateTab={(tab) => setAdminTab(tab)}
                 />
               )}
@@ -481,7 +508,7 @@ export default function App() {
               {adminTab === 'clients' && (
                 <ClientList
                   currentUser={staffUser}
-                  onSelectClient={(c) => setSelectedClientForProfile(c)}
+                  onSelectClient={(c) => handleSelectClientForProfile(c)}
                   onNewClientClick={() => navigateTo('intake')}
                 />
               )}
@@ -489,7 +516,7 @@ export default function App() {
               {adminTab === 'counsellors' && (
                 <CounsellorManagement
                   currentUser={staffUser}
-                  onSelectClient={(c) => setSelectedClientForProfile(c)}
+                  onSelectClient={(c) => handleSelectClientForProfile(c)}
                   onNavigateTab={(tab) => setAdminTab(tab)}
                 />
               )}
@@ -517,7 +544,7 @@ export default function App() {
                   <HistoricalClientMigration
                     currentUser={staffUser}
                     onNavigateTab={(tab) => setAdminTab(tab)}
-                    onSelectClient={(c) => setSelectedClientForProfile(c)}
+                    onSelectClient={(c) => handleSelectClientForProfile(c)}
                   />
                 ) : (
                   <div className="bg-white rounded-3xl p-8 sm:p-12 border border-red-200 shadow-sm text-center max-w-xl mx-auto my-12 space-y-4">

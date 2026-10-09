@@ -3,6 +3,7 @@ import { Shield, Phone, Sparkles, Lock, LogOut, ArrowRight, HeartHandshake, Flas
 import { AuthUser } from '../../services/authService';
 import { dataService } from '../../services/dataService';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
+import { GamblePauseLogo } from './GamblePauseLogo';
 
 interface HeaderProps {
   isAuthenticated?: boolean;
@@ -53,30 +54,13 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Main navigation bar */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
-        {/* Brand identity */}
+        {/* Brand identity: Logo only */}
         <div
           onClick={onNavigateHome}
-          className="flex items-center gap-3 cursor-pointer group"
+          className="flex items-center cursor-pointer group"
           id="brand-logo-button"
         >
-          <img
-            src="/icon.svg"
-            alt="GamblePause Logo"
-            className="w-10 h-10 rounded-xl shadow-md shadow-red-600/20 group-hover:scale-105 transition-transform object-contain"
-          />
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="font-black tracking-tight text-gray-950 text-base sm:text-lg">
-                GAMBLE<span className="text-red-600">PAUSE</span>
-              </span>
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-700 px-1.5 py-0.5 rounded border border-red-200">
-                Africa
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-500 font-medium leading-none">
-              Client Management & Assessment System
-            </p>
-          </div>
+          <GamblePauseLogo size="sm" className="group-hover:scale-105 transition-transform" />
         </div>
 
         {/* Right side navigation / view switchers */}

@@ -112,8 +112,21 @@ export function mapSmtpError(err: any): { code: string; message: string; stage: 
  * Reads, validates, and normalizes SMTP configuration from process.env
  */
 export function getSmtpConfig() {
-  const rawUser = (process.env.SMTP_USER || '').trim();
-  const rawPass = (process.env.SMTP_PASSWORD || '').trim();
+  const rawUser = (
+    process.env.SMTP_USER ||
+    process.env.SMTP_EMAIL ||
+    process.env.GMAIL_USER ||
+    process.env.EMAIL_USER ||
+    ''
+  ).trim();
+  const rawPass = (
+    process.env.SMTP_PASSWORD ||
+    process.env.SMTP_PASS ||
+    process.env.GMAIL_APP_PASSWORD ||
+    process.env.EMAIL_PASSWORD ||
+    process.env.MAIL_PASSWORD ||
+    ''
+  ).trim();
   const user = rawUser.replace(/^["']|["']$/g, '').trim();
   // Strip quotes and internal spaces (e.g. Google App Password copied with 4-letter grouping)
   const pass = rawPass.replace(/^["']|["']$/g, '').replace(/\s+/g, '').trim();

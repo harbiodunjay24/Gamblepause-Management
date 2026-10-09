@@ -30,6 +30,7 @@ import { Client, ClientStatus, StaffUser, AssessmentSubmission, CaseNote, Counse
 import { dataService } from '../../services/dataService';
 import { NotificationService } from '../../services/notificationService';
 import { exportSingleClientExcel } from '../../services/exportService';
+import { normalizeWhatsAppNumber, createWhatsAppDirectUrl, generateWhatsAppMessage } from '../../services/whatsappService';
 
 interface ClientProfileProps {
   client: Client;
@@ -353,7 +354,7 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
                   </div>
 
                   {/* Counsellor Direct Contact Info */}
-                  {assignedCounsellor && (
+                  {assignedCounsellor ? (
                     <div className="flex flex-wrap items-center gap-3 pt-1 text-xs">
                       {assignedCounsellor.email && (
                         <a
@@ -364,7 +365,7 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
                           <span>{assignedCounsellor.email}</span>
                         </a>
                       )}
-                      {assignedCounsellor.phone && (
+                      {assignedCounsellor.phone ? (
                         <a
                           href={`tel:${assignedCounsellor.phone}`}
                           className="inline-flex items-center gap-1.5 text-gray-600 hover:text-red-600 transition-colors"
@@ -372,20 +373,38 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
                           <Phone className="w-3.5 h-3.5 text-gray-400" />
                           <span>{assignedCounsellor.phone}</span>
                         </a>
+                      ) : (
+                        <span className="text-gray-400 italic text-[11px]">Phone number not configured</span>
                       )}
-                      {waUrl && (
-                        <a
-                          href={waUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg transition-colors"
-                          title="Open WhatsApp chat with assigned counsellor regarding this client"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>WhatsApp Counsellor</span>
-                        </a>
-                      )}
+                      {(() => {
+                        const rawPhone = assignedCounsellor.whatsappNumber || assignedCounsellor.phone || '';
+                        const msg = `Hello ${assignedCounsellor.name || 'Counsellor'},\n\nRegarding GamblePause client: ${client.firstName} ${client.lastName} (${client.id})\nCurrent stage: ${client.currentStageName}\nStatus: ${client.status}`;
+                        const url = createWhatsAppDirectUrl(rawPhone, msg);
+                        if (!url) {
+                          return (
+                            <span className="text-gray-400 text-[11px] italic">
+                              WhatsApp line unavailable
+                            </span>
+                          );
+                        }
+                        return (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                            title="Open WhatsApp chat with assigned counsellor regarding this client"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>WhatsApp Counsellor</span>
+                          </a>
+                        );
+                      })()}
                     </div>
+                  ) : (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg mt-1 inline-block">
+                      No counsellor assigned yet. Assign a counsellor below to establish clinical contact.
+                    </p>
                   )}
                 </div>
 
@@ -475,6 +494,29 @@ export const ClientProfile: React.FC<ClientProfileProps> = ({
                 {client.email}
               </a>
             </span>
+            {client.phone && (() => {
+              const clientWaUrl = createWhatsAppDirectUrl(
+                client.phone,
+                generateWhatsAppMessage({
+                  client,
+                  counsellorName: client.assignedCounsellorName || currentUser.name || 'Your GamblePause Clinical Counsellor',
+                  messageType: client.status === 'Overdue' ? 'assessment_reminder' : client.nextAssessmentName ? 'assessment_upcoming' : 'general_checkin',
+                })
+              );
+              if (!clientWaUrl) return null;
+              return (
+                <a
+                  href={clientWaUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded transition-colors"
+                  title="Open pre-filled WhatsApp message for this client"
+                >
+                  <MessageSquare className="w-3 h-3 text-emerald-600" />
+                  <span>WhatsApp Client</span>
+                </a>
+              );
+            })()}
             {client.emergencyContactName && (
               <span className="text-gray-500">
                 Emergency: {client.emergencyContactName} ({client.emergencyContactRelationship || 'Contact'}) - {client.emergencyContactPhone || 'N/A'}

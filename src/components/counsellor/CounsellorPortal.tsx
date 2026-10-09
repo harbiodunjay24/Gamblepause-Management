@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   LayoutDashboard,
@@ -8,6 +8,7 @@ import {
   LogOut,
   Search,
   CheckCircle2,
+  CheckCircle,
   Phone,
   Mail,
   Shield,
@@ -20,10 +21,17 @@ import {
   MessageSquare,
   Sparkles,
   ChevronRight,
+  UserCheck,
+  TrendingUp,
+  Activity,
+  Filter,
+  RefreshCw,
 } from 'lucide-react';
 import { Client, CaseNote, AssessmentSubmission, FormDefinition, NotificationLog } from '../../types';
-import { dataService } from '../../services/dataService';
+import { dataService, isClientActiveInPathway, isHistoricalMigratedClient } from '../../services/dataService';
 import { AuthUser } from '../../services/authService';
+import { GamblePauseLogo } from '../common/GamblePauseLogo';
+import { createWhatsAppDirectUrl, generateWhatsAppMessage } from '../../services/whatsappService';
 
 interface CounsellorPortalProps {
   user: AuthUser;
@@ -176,27 +184,14 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col justify-between font-sans">
-      {/* Counsellor Portal Header with GamblePause Red & White Identity */}
+      {/* Counsellor Portal Header with GamblePause Logo Only */}
       <header className="border-b border-gray-200 bg-white sticky top-0 z-30 px-4 py-3 shadow-xs">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center font-black text-lg shadow-sm">
-              GP
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-base font-black text-gray-950 tracking-tight">
-                  GAMBLE<span className="text-red-600">PAUSE</span>
-                </span>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-700 px-2 py-0.5 rounded border border-red-200">
-                  Counsellor Portal
-                </span>
-              </div>
-              <div className="text-xs text-gray-600 font-medium flex items-center gap-1.5 mt-0.5">
-                <span className="font-bold text-gray-900">{user.name}</span>
-                <span className="text-gray-400">&bull;</span>
-                <span className="text-red-600 font-semibold">Caseload: {totalCaseload} clients</span>
-              </div>
+            <GamblePauseLogo size="sm" alt="GamblePause Logo" />
+            <div className="text-xs text-gray-600 font-medium leading-tight">
+              <span className="font-bold text-gray-950 block">{user.name}</span>
+              <span className="text-red-600 font-semibold text-[11px]">Caseload: {totalCaseload} clients</span>
             </div>
           </div>
 
@@ -380,8 +375,31 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                   <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-600">
                     <span className="flex items-center gap-1">
                       <Phone className="w-3.5 h-3.5 text-gray-400" />
-                      {selectedClient.phone}
+                      {selectedClient.phone || 'No phone recorded'}
                     </span>
+                    {selectedClient.phone && (() => {
+                      const waUrl = createWhatsAppDirectUrl(
+                        selectedClient.phone,
+                        generateWhatsAppMessage({
+                          client: selectedClient,
+                          counsellorName: user.name,
+                          messageType: selectedClient.status === 'Overdue' ? 'assessment_reminder' : selectedClient.nextAssessmentName ? 'assessment_upcoming' : 'general_checkin',
+                        })
+                      );
+                      if (!waUrl) return null;
+                      return (
+                        <a
+                          href={waUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer"
+                          title="Open WhatsApp chat with client with pre-filled check-in message"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>WhatsApp Client</span>
+                        </a>
+                      );
+                    })()}
                     <span className="flex items-center gap-1">
                       <Mail className="w-3.5 h-3.5 text-gray-400" />
                       {selectedClient.email}

@@ -7,6 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import sendCounsellorEmailHandler from './api/notifications/send-counsellor-email';
+import deleteAuthUserHandler from './api/admin/delete-auth-user';
 
 const app = express();
 const PORT = 3000;
@@ -1154,6 +1155,11 @@ app.all('/api/notifications/send-email', (req, res) => {
 });
 app.all('/api/send-email', (req, res) => {
   return sendCounsellorEmailHandler(req, res);
+});
+
+// Admin User Deletion
+app.all('/api/admin/delete-auth-user', (req, res) => {
+  return deleteAuthUserHandler(req, res);
 });
 
 // ---------------------------------------------------------

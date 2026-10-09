@@ -100,13 +100,16 @@ class AuthService {
       onAuthStateChanged(auth, async (fbUser) => {
         if (fbUser) {
           const cleanEmail = (fbUser.email || '').toLowerCase().trim();
-          let role: AuthUser['role'] = 'Client';
+          const superAdminBootstrapEmails = [
+            'ayodejiharbiodun24@gmail.com',
+            'ladipo.abiose@gamblepause.org',
+            'stevobenjo@gmail.com',
+          ];
 
-          if (
-            cleanEmail === 'ayodejiharbiodun24@gmail.com' ||
-            cleanEmail === 'ladipo.abiose@gamblepause.org' ||
-            cleanEmail === 'stevobenjo@gmail.com'
-          ) {
+          // Retain currently authenticated role while resolving Firestore to prevent premature demotion / session kicks
+          let role: AuthUser['role'] = (this.currentUser?.id === fbUser.uid ? this.currentUser.role : undefined) || 'Client';
+
+          if (superAdminBootstrapEmails.includes(cleanEmail)) {
             role = 'Super Admin';
           } else if (
             cleanEmail === 'benjamin@gamblepause.org' ||
@@ -118,7 +121,7 @@ class AuthService {
             role = 'Staff';
           }
 
-          let clientId: string | undefined = undefined;
+          let clientId: string | undefined = this.currentUser?.clientId;
           const canonicalCounsellorNames: Record<string, string> = {
             'benjamin@gamblepause.org': 'Benjamin',
             'micheal.akinniku@gamblepause.org': 'Micheal Akinniku',
@@ -126,6 +129,7 @@ class AuthService {
           };
           let displayName =
             canonicalCounsellorNames[cleanEmail] ||
+            this.currentUser?.name ||
             fbUser.displayName ||
             fbUser.email?.split('@')[0] ||
             'User';
@@ -143,12 +147,14 @@ class AuthService {
                 }
               }
 
-              // Also check staff collection for counsellors/staff
+              // Also check staff collection authoritatively by authUid or email
               if (!isDeactivated && role !== 'Client') {
                 const qStaff = query(collection(db, 'staff'), where('email', '==', cleanEmail));
                 const sSnap = await getDocs(qStaff);
                 if (!sSnap.empty) {
                   const sData = sSnap.docs[0].data();
+                  if (sData.role) role = sData.role;
+                  if (sData.name && !displayName) displayName = sData.name;
                   if (sData.active === false || sData.status === 'Deactivated') {
                     isDeactivated = true;
                   }
@@ -169,7 +175,7 @@ class AuthService {
                 }
               }
             } catch (e) {
-              // Ignore
+              console.warn('[authService] Authoritative user/role lookup notice:', e);
             }
           }
 
@@ -199,31 +205,38 @@ class AuthService {
           this.currentUser = authUser;
           sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
 
-          // Active session watchdog: detect deactivation in real-time
+          // Active session watchdog: detect deactivation in real-time with resilient error handling
           if (this.sessionUnsubscribe) {
             this.sessionUnsubscribe();
             this.sessionUnsubscribe = null;
           }
           if (db) {
-            this.sessionUnsubscribe = onFirestoreSnapshot(doc(db, 'users', fbUser.uid), async (snap) => {
-              if (snap.exists()) {
-                const data = snap.data();
-                if (data.active === false || data.status === 'Deactivated') {
-                  console.warn('[authService] Account deactivated in real-time. Immediately terminating session.');
-                  await signOut(auth);
-                  if (this.sessionUnsubscribe) {
-                    this.sessionUnsubscribe();
-                    this.sessionUnsubscribe = null;
-                  }
-                  this.currentUser = null;
-                  sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
-                  this.notify();
-                  if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
-                    window.location.href = '/admin/login?deactivated=1';
+            this.sessionUnsubscribe = onFirestoreSnapshot(
+              doc(db, 'users', fbUser.uid),
+              async (snap) => {
+                if (snap.exists()) {
+                  const data = snap.data();
+                  if (data.active === false || data.status === 'Deactivated') {
+                    console.warn('[authService] Account deactivated in real-time. Immediately terminating session.');
+                    await signOut(auth);
+                    if (this.sessionUnsubscribe) {
+                      this.sessionUnsubscribe();
+                      this.sessionUnsubscribe = null;
+                    }
+                    this.currentUser = null;
+                    sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+                    this.notify();
+                    if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+                      window.location.href = '/admin/login?deactivated=1';
+                    }
                   }
                 }
+              },
+              (err) => {
+                // Non-fatal notice: Prevent uncaught error during token renewals or network reconnection
+                console.warn('[authService] Session watchdog snapshot notice:', err?.message || err);
               }
-            });
+            );
           }
 
           this.notify();
@@ -516,6 +529,9 @@ class AuthService {
             const sSnap = await getDocs(qStaff);
             if (!sSnap.empty) {
               const sData = sSnap.docs[0].data();
+              if (sData.role) {
+                role = sData.role;
+              }
               if (sData.active === false || sData.status === 'Deactivated') {
                 isActive = false;
                 isDeactivated = true;

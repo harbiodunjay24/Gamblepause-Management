@@ -111,11 +111,32 @@ class DataService {
           this.reconcileCanonicalWorkflowIfSuperAdmin().catch(() => {});
         }
       } else {
+        this.clearFirestoreListeners();
         this.clients = [];
         this.authoritativeLoaded = false;
       }
       this.notify();
     });
+  }
+
+  public clearFirestoreListeners(): void {
+    if (this.firestoreClientsUnsubscribe) {
+      this.firestoreClientsUnsubscribe();
+      this.firestoreClientsUnsubscribe = null;
+    }
+    if (this.firestoreWorkflowsUnsubscribe) {
+      this.firestoreWorkflowsUnsubscribe();
+      this.firestoreWorkflowsUnsubscribe = null;
+    }
+    if (this.firestoreFormsUnsubscribe) {
+      this.firestoreFormsUnsubscribe();
+      this.firestoreFormsUnsubscribe = null;
+    }
+    if (this.firestoreSettingsUnsubscribe) {
+      this.firestoreSettingsUnsubscribe();
+      this.firestoreSettingsUnsubscribe = null;
+    }
+    this.firestoreSyncActive = false;
   }
 
   public isAuthoritativeLoaded(): boolean {
@@ -1292,7 +1313,11 @@ class DataService {
         }
       };
       this.eventSource.onerror = () => {
-        // SSE error, will auto-reconnect
+        // If SSE endpoint is unreachable (e.g. serverless Vercel deployment), cleanly close immediately
+        if (this.eventSource) {
+          this.eventSource.close();
+          this.eventSource = null;
+        }
       };
     } catch (e) {
       console.warn('[DataService] SSE init exception:', e);
@@ -1485,6 +1510,9 @@ class DataService {
 
     // First check in-memory cache
     const existing = this.clients.find((c) => c.authUid === authUid && !c.isDemo);
+    if (existing) {
+      return existing;
+    }
 
     if (db && isFirebaseConfigured) {
       try {
@@ -1498,7 +1526,14 @@ class DataService {
               ...data,
               isDemo: false,
             };
-            this.mergeFirestoreClients([clientRecord]);
+            const existingIndex = this.clients.findIndex((c) => c.id === clientRecord.id);
+            if (existingIndex >= 0) {
+              this.clients[existingIndex] = clientRecord;
+            } else {
+              this.clients.unshift(clientRecord);
+            }
+            this.authoritativeLoaded = true;
+            this.saveToStorage();
             return clientRecord;
           }
         }
@@ -1604,17 +1639,33 @@ class DataService {
   }
 
   public async generateNextClientId(): Promise<string> {
-    // 1. Query server endpoint for synchronized sequence counter
+    // Baseline floor starts after historical records (GP-0001 through GP-0376) and prior test allocations
+    const BASELINE_FLOOR = 3000;
+
+    // 1. Query server endpoint for synchronized sequence counter with strict timeout to prevent UI freezes
     try {
-      const res = await fetch('/api/clients/next-id');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch('/api/clients/next-id', {
+        method: 'POST',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const data = await res.json();
         if (data && data.nextId) {
-          return data.nextId;
+          const match = data.nextId.match(/^GP-(\d+)$/i);
+          if (match) {
+            const num = parseInt(match[1], 10);
+            if (!isNaN(num) && num > BASELINE_FLOOR) {
+              localStorage.setItem('gp_last_client_seq', String(num));
+              return data.nextId;
+            }
+          }
         }
       }
     } catch {
-      // Backend not reachable, fall back to robust local calculation
+      // Backend not reachable or timed out, fall back immediately to robust local calculation
     }
 
     // 2. Scan in-memory clients
@@ -1631,8 +1682,7 @@ class DataService {
       existingNumbers.push(storedSeq);
     }
 
-    // Baseline floor is 15 based on production Firestore records (GP-0001 through GP-0015)
-    const maxNum = Math.max(15, ...existingNumbers);
+    const maxNum = Math.max(BASELINE_FLOOR, ...existingNumbers);
     const nextNum = maxNum + 1;
     localStorage.setItem('gp_last_client_seq', String(nextNum));
 
@@ -1701,7 +1751,7 @@ class DataService {
     const initialStage = activeStages.find((w) => w.order === 1) || activeStages[0] || this.workflows.find((w) => w.id === 'stage-assessment-1' || w.formId === 'form-recovery-1');
     const initialForm = this.forms.find((f) => f.id === initialStage?.formId || f.id === 'form-recovery-1') || this.forms[0];
 
-    const newClient: Client = {
+    let newClient: Client = {
       ...(existingClient || {}),
       id: clientId,
       ...biodata,
@@ -1724,19 +1774,55 @@ class DataService {
       isDemo: false,
     };
 
-    // Authoritative Cloud Firestore write: Await and verify BEFORE local storage persistence
+    // Authoritative Cloud Firestore write with collision protection: Await and verify BEFORE local storage persistence
     if (db && isFirebaseConfigured) {
-      try {
-        const cleanPayload = cleanForFirestore(newClient);
-        await setDoc(doc(db, 'clients', cleanPayload.id), cleanPayload, { merge: true });
-        console.log(`[Firestore] Client ${cleanPayload.id} successfully written and verified in Firestore.`);
-      } catch (err: any) {
-        console.error('[Firestore] Register client sync error:', err);
-        const isPermDenied = err?.code === 'permission-denied' || err?.message?.includes('permission-denied');
-        if (isPermDenied) {
-          throw new Error('Firestore Authorization Error (permission-denied): Security rules rejected creating client document for this authenticated account.');
+      const BASELINE_FLOOR = 3000;
+      let candidateClient = { ...newClient };
+      let writeSuccess = false;
+      let attempts = 0;
+
+      while (!writeSuccess && attempts < 50) {
+        try {
+          const cleanPayload = cleanForFirestore(candidateClient);
+          await setDoc(doc(db, 'clients', cleanPayload.id), cleanPayload, { merge: true });
+          console.log(`[Firestore] Client ${cleanPayload.id} successfully written and verified in Firestore.`);
+          writeSuccess = true;
+          newClient = candidateClient;
+          const match = candidateClient.id.match(/^GP-(\d+)$/i);
+          if (match) {
+            const usedNum = parseInt(match[1], 10);
+            if (!isNaN(usedNum)) {
+              localStorage.setItem('gp_last_client_seq', String(usedNum));
+            }
+          }
+        } catch (err: any) {
+          console.error(`[Firestore] Register client sync error for ID ${candidateClient.id}:`, err);
+          const isPermDenied = err?.code === 'permission-denied' || err?.message?.includes('permission-denied');
+
+          // If permission-denied occurred on an unowned candidate ID (document already exists in Firestore),
+          // increment candidate sequence and retry up to 50 times!
+          if (isPermDenied && attempts < 49 && !existingClient) {
+            attempts++;
+            // Jitter delay to prevent concurrent registrants from retrying in lockstep
+            await new Promise((resolve) => setTimeout(resolve, 40 + Math.floor(Math.random() * 80)));
+            const match = candidateClient.id.match(/^GP-(\d+)$/i);
+            const currentNum = match ? parseInt(match[1], 10) : BASELINE_FLOOR;
+            const nextNum = Math.max(BASELINE_FLOOR + 1, currentNum + 1);
+            const nextId = `GP-${String(nextNum).padStart(4, '0')}`;
+            localStorage.setItem('gp_last_client_seq', String(nextNum));
+            console.warn(`[Firestore] Collision detected on ${candidateClient.id}. Retrying with next available candidate ${nextId} (attempt ${attempts + 1})...`);
+            candidateClient = {
+              ...candidateClient,
+              id: nextId,
+            };
+            continue;
+          }
+
+          if (isPermDenied) {
+            throw new Error('Firestore Authorization Error (permission-denied): Security rules rejected creating client document for this authenticated account.');
+          }
+          throw new Error(`Failed to save client record to Firestore database (${err?.code || err?.message || err}).`);
         }
-        throw new Error(`Failed to save client record to Firestore database (${err?.code || err?.message || err}).`);
       }
     }
 

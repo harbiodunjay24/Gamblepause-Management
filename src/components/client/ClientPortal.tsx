@@ -61,7 +61,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
       if (isMounted) {
         if (foundClient) {
-          setClient(foundClient);
+          setClient((prev) => {
+            if (prev && prev.id === foundClient.id && prev.lastActivityDate === foundClient.lastActivityDate && prev.status === foundClient.status && prev.currentStageId === foundClient.currentStageId && prev.nextAssessmentId === foundClient.nextAssessmentId) {
+              return prev;
+            }
+            return foundClient;
+          });
         } else if (showLoadingSpinner) {
           // Only nullify client if initial load truly yielded no record
           setClient(null);

@@ -190,6 +190,7 @@ interface DatabaseSchema {
   notifications: NotificationRecord[];
   caseNotes: CaseNote[];
   auditLogs: AuditLogEntry[];
+  nextClientSequence?: number;
 }
 
 function hashPassword(password: string, salt: string = 'gp_salt_2026'): string {
@@ -783,8 +784,16 @@ app.post('/api/auth/change-password', (req, res) => {
   return res.json({ success: true });
 });
 
-// Clients API
-app.get('/api/clients/next-id', (req, res) => {
+// Clients API - Concurrency-safe atomic sequence allocator
+app.all('/api/clients/next-id', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
   const existingNumbers = (db.clients || [])
     .map((c) => {
       const match = c.id.match(/^GP-(\d+)$/i);
@@ -792,10 +801,19 @@ app.get('/api/clients/next-id', (req, res) => {
     })
     .filter((n) => !isNaN(n));
 
-  const maxNum = Math.max(15, ...existingNumbers);
-  const nextNum = maxNum + 1;
-  const nextId = `GP-${String(nextNum).padStart(4, '0')}`;
-  return res.json({ success: true, nextId, nextNum });
+  // Safe floor baseline is 3000 (safely above historical records GP-0001 to GP-0376 and development test records)
+  const currentMax = Math.max(
+    db.nextClientSequence || 0,
+    3000,
+    ...existingNumbers
+  );
+
+  const allocatedNum = currentMax + 1;
+  db.nextClientSequence = allocatedNum;
+  saveDatabase();
+
+  const nextId = `GP-${String(allocatedNum).padStart(4, '0')}`;
+  return res.json({ success: true, nextId, nextNum: allocatedNum });
 });
 
 app.get('/api/clients', (req, res) => {
@@ -813,6 +831,14 @@ app.post('/api/clients', (req, res) => {
     db.clients[existingIdx] = { ...db.clients[existingIdx], ...client };
   } else {
     db.clients.unshift(client);
+  }
+
+  const match = client.id.match(/^GP-(\d+)$/i);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (!isNaN(num) && num > (db.nextClientSequence || 0)) {
+      db.nextClientSequence = num;
+    }
   }
 
   saveDatabase();

@@ -46,15 +46,29 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
   const staff = dataService.getStaff();
   const allClients = dataService.getClients();
 
+  const matchesCounsellor = (cl: Client, c: StaffUser) => {
+    if (cl.assignedCounsellorId && (cl.assignedCounsellorId === c.id || (c.authUid && cl.assignedCounsellorId === c.authUid))) {
+      return true;
+    }
+    const cleanName = (c.name || '').trim().toLowerCase();
+    if (cl.assignedCounsellorName && cleanName) {
+      const cName = cl.assignedCounsellorName.trim().toLowerCase();
+      if (cName === cleanName) return true;
+      const firstPart = cleanName.split(' ')[0];
+      if (firstPart.length > 2 && cName.includes(firstPart)) return true;
+    }
+    return false;
+  };
+
   // Filter staff to role = 'Counsellor' and compute live active clients
   const counsellors = useMemo(() => {
     return staff
       .filter((s) => s.role === 'Counsellor')
       .map((c) => {
         const activeClients = allClients.filter(
-          (cl) => cl.assignedCounsellorId === c.id && cl.status !== 'Closed' && cl.status !== 'Completed'
+          (cl) => matchesCounsellor(cl, c) && cl.status !== 'Closed' && cl.status !== 'Completed'
         );
-        const totalClients = allClients.filter((cl) => cl.assignedCounsellorId === c.id);
+        const totalClients = allClients.filter((cl) => matchesCounsellor(cl, c));
         const status: 'Active' | 'Inactive' = c.active !== false ? 'Active' : 'Inactive';
         return {
           ...c,
@@ -455,13 +469,13 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
             </div>
 
             <div className="max-h-80 overflow-y-auto space-y-2">
-              {allClients.filter((cl) => cl.assignedCounsellorId === viewingCounsellor.id).length === 0 ? (
+              {allClients.filter((cl) => matchesCounsellor(cl, viewingCounsellor)).length === 0 ? (
                 <p className="text-xs text-gray-400 py-6 text-center">
                   No clients currently assigned to this counsellor.
                 </p>
               ) : (
                 allClients
-                  .filter((cl) => cl.assignedCounsellorId === viewingCounsellor.id)
+                  .filter((cl) => matchesCounsellor(cl, viewingCounsellor))
                   .map((cl) => (
                     <div
                       key={cl.id}

@@ -133,7 +133,7 @@ export const ClientList: React.FC<ClientListProps> = ({
     });
   }, [clients, searchQuery, statusFilter, counsellorFilter, countryFilter, stateFilter]);
 
-  if (!isLoaded && clients.length === 0) {
+  if (!isLoaded) {
     return (
       <div className="space-y-6">
         <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">

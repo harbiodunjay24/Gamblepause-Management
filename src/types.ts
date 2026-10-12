@@ -59,6 +59,8 @@ export interface Client {
   lastAssessmentDate?: string;
   assignedCounsellorId?: string;
   assignedCounsellorName?: string;
+  assignedCounsellorPhone?: string;
+  assignedCounsellorWhatsApp?: string;
   lastActivityDate: string;
   totalAssessmentsCompleted: number;
   totalAssessmentsOverdue: number;
@@ -67,6 +69,8 @@ export interface Client {
   secureAccessKey: string; // Unguessable client assessment token
   authUid?: string; // Firebase Authentication UID
   isDemo?: boolean; // Clearly marks DEMO DATA
+  isTest?: boolean; // Clearly marks test/probe records
+  isProbe?: boolean;
 }
 
 export type QuestionType =

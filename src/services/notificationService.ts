@@ -447,8 +447,8 @@ export class NotificationService {
         );
         overdueCount++;
         remindersSent++;
-      } else if (diffHours >= 24 && diffHours < 72 && client.status === 'Active') {
-        // 24 hours overdue: transition to Assessment Due and send reminder
+      } else if (diffHours >= 0 && diffHours < 72 && client.status === 'Active') {
+        // Due time reached: transition to Assessment Due and send reminder
         dataService.updateClientStatus(client.id, 'Assessment Due');
         await this.sendAssessmentReminder(client, form, 'reminder_24h');
         remindersSent++;

@@ -446,32 +446,80 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         </section>
 
         {/* Assigned Counsellor Support Card */}
-        <section className="p-5 rounded-2xl bg-white border border-gray-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 text-red-600 flex items-center justify-center shrink-0">
-              <User className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 font-medium">Assigned Clinical Counsellor</div>
-              <div className="text-sm font-black text-gray-950">
-                {client.assignedCounsellorName || 'Assigned GamblePause Clinical Team'}
-              </div>
-              <div className="text-xs text-gray-500">
-                Your counsellor reviews your assessment reflections confidentially.
-              </div>
-            </div>
-          </div>
+        {(() => {
+          const contact = dataService.getAssignedCounsellorContact(client);
+          const counsellorDisplayName = contact?.name || client.assignedCounsellorName || 'Assigned GamblePause Clinical Team';
+          const counsellorPhone = contact?.phone || client.assignedCounsellorPhone;
+          const counsellorWhatsApp = contact?.whatsappNumber || client.assignedCounsellorWhatsApp || counsellorPhone;
 
-          <div className="flex items-center gap-2">
-            <a
-              href="tel:0800426253"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold border border-red-200 transition-colors"
-            >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>Helpline: 0800-GAMBLE-PAUSE</span>
-            </a>
-          </div>
-        </section>
+          const cleanPhoneForTel = counsellorPhone ? counsellorPhone.replace(/[^0-9+]/g, '') : '';
+          const cleanWhatsAppDigits = counsellorWhatsApp ? counsellorWhatsApp.replace(/[^0-9]/g, '') : '';
+          const whatsappUrl = cleanWhatsAppDigits
+            ? `https://wa.me/${cleanWhatsAppDigits}?text=${encodeURIComponent(`Hello ${counsellorDisplayName}, I am registered client ${client.id} (${client.firstName} ${client.lastName}) reaching out from the GamblePause Client Portal regarding my recovery program.`)}`
+            : null;
+
+          return (
+            <section className="p-5 rounded-2xl bg-white border border-gray-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-red-50 border border-red-200 text-red-600 flex items-center justify-center shrink-0">
+                  <User className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider">
+                    Assigned Clinical Counsellor
+                  </div>
+                  <div className="text-base font-black text-gray-950 mt-0.5">
+                    {counsellorDisplayName}
+                  </div>
+                  <div className="text-xs text-gray-600 mt-0.5 flex flex-wrap items-center gap-2">
+                    {counsellorPhone ? (
+                      <span className="font-bold text-gray-900 flex items-center gap-1">
+                        <PhoneCall className="w-3.5 h-3.5 text-red-600" />
+                        <span>Direct line: <strong className="font-mono text-gray-950">{counsellorPhone}</strong></span>
+                      </span>
+                    ) : (
+                      <span>Your counsellor reviews your assessment reflections confidentially.</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+                {counsellorPhone && (
+                  <a
+                    href={`tel:${cleanPhoneForTel}`}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer"
+                    title={`Call counsellor ${counsellorDisplayName} directly`}
+                  >
+                    <PhoneCall className="w-3.5 h-3.5" />
+                    <span>Call Counsellor</span>
+                  </a>
+                )}
+
+                {whatsappUrl && (
+                  <a
+                    href={whatsappUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition-colors shrink-0 cursor-pointer"
+                    title={`Chat on WhatsApp with counsellor ${counsellorDisplayName}`}
+                  >
+                    <span>WhatsApp</span>
+                  </a>
+                )}
+
+                <a
+                  href="tel:0800426253"
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-gray-50 hover:bg-gray-100 text-gray-700 text-xs font-bold border border-gray-200 transition-colors shrink-0 cursor-pointer"
+                  title="24/7 GamblePause Toll-free Crisis Helpline"
+                >
+                  <PhoneCall className="w-3.5 h-3.5 text-red-600" />
+                  <span>Helpline: 0800-426-253</span>
+                </a>
+              </div>
+            </section>
+          );
+        })()}
       </main>
 
       {/* Official Footer with GamblePause Digital Team signature */}

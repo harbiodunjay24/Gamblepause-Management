@@ -691,6 +691,9 @@ class AuthService {
     }
     this.currentUser = null;
     sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+    try {
+      localStorage.removeItem('gamblepause_clients');
+    } catch {}
     this.notify();
   }
 

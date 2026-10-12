@@ -106,6 +106,7 @@ class DataService {
     // Re-sync with Firestore whenever auth state changes (e.g. login/logout)
     authService.subscribe((user) => {
       if (user) {
+        this.authoritativeLoaded = false;
         this.syncAllFromFirestore();
         if (user.role === 'Super Admin') {
           this.reconcileCanonicalWorkflowIfSuperAdmin().catch(() => {});
@@ -114,6 +115,9 @@ class DataService {
         this.clearFirestoreListeners();
         this.clients = [];
         this.authoritativeLoaded = false;
+        try {
+          localStorage.removeItem(STORAGE_KEYS.CLIENTS);
+        } catch {}
       }
       this.notify();
     });
@@ -510,7 +514,7 @@ class DataService {
             snapId.forEach((docSnap) => {
               const data = docSnap.data() as Client;
               if (data && data.id) {
-                firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+                firestoreClientsMap.set(data.id, { ...data, isDemo: Boolean(data.isDemo) });
               }
             });
           }).catch((e) => console.warn('[DataService] Counsellor query by assignedCounsellorId notice:', e?.message || e))
@@ -524,7 +528,7 @@ class DataService {
               snapName.forEach((docSnap) => {
                 const data = docSnap.data() as Client;
                 if (data && data.id) {
-                  firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+                  firestoreClientsMap.set(data.id, { ...data, isDemo: Boolean(data.isDemo) });
                 }
               });
             }).catch((e) => console.warn('[DataService] Counsellor query by assignedCounsellorName notice:', e?.message || e))
@@ -539,7 +543,7 @@ class DataService {
               snapStaffId.forEach((docSnap) => {
                 const data = docSnap.data() as Client;
                 if (data && data.id) {
-                  firestoreClientsMap.set(data.id, { ...data, isDemo: false });
+                  firestoreClientsMap.set(data.id, { ...data, isDemo: Boolean(data.isDemo) });
                 }
               });
             }).catch(() => {})
@@ -579,7 +583,7 @@ class DataService {
             if (data && data.id) {
               realtimeClients.push({
                 ...data,
-                isDemo: false,
+                isDemo: Boolean(data.isDemo),
               });
             }
           });
@@ -1454,18 +1458,17 @@ class DataService {
   }
 
   // --- Clients with STRICT ROLE-BASED ACCESS CONTROL ---
-  public getClients(): Client[] {
+  public getClients(includeNonGenuine: boolean = false): Client[] {
     const user = authService.getCurrentUser();
     if (!user) {
       // Unauthenticated users NEVER receive client data
       return [];
     }
 
+    let result: Client[] = [];
     if (user.role === 'Super Admin') {
-      return [...this.clients];
-    }
-
-    if (user.role === 'Counsellor') {
+      result = [...this.clients];
+    } else if (user.role === 'Counsellor') {
       // Counsellor sees ONLY clients assigned to them
       const userEmail = (user.email || '').toLowerCase().trim();
       const staffMember = this.staff.find(
@@ -1475,7 +1478,7 @@ class DataService {
       const staffName = staffMember?.name || user.name;
       const cleanName = (staffName || user.name || '').trim().toLowerCase();
 
-      return this.clients.filter((c) => {
+      result = this.clients.filter((c) => {
         if (c.assignedCounsellorId && (c.assignedCounsellorId === user.id || (staffId && c.assignedCounsellorId === staffId))) {
           return true;
         }
@@ -1487,18 +1490,18 @@ class DataService {
         }
         return false;
       });
-    }
-
-    if (user.role === 'Client') {
+    } else if (user.role === 'Client') {
       // Client sees ONLY their own client record (by clientId or matching authUid)
       return this.clients.filter((c) => c.id === user.clientId || c.authUid === user.id);
+    } else if (user.role === 'Staff' || user.role === 'Analyst / Viewer') {
+      result = [...this.clients];
     }
 
-    if (user.role === 'Staff' || user.role === 'Analyst / Viewer') {
-      return [...this.clients];
+    if (!includeNonGenuine) {
+      result = result.filter(isGenuineClient);
     }
 
-    return [];
+    return result;
   }
 
   /**
@@ -1524,7 +1527,7 @@ class DataService {
           if (data && data.id) {
             const clientRecord: Client = {
               ...data,
-              isDemo: false,
+              isDemo: Boolean(data.isDemo),
             };
             const existingIndex = this.clients.findIndex((c) => c.id === clientRecord.id);
             if (existingIndex >= 0) {
@@ -1532,8 +1535,11 @@ class DataService {
             } else {
               this.clients.unshift(clientRecord);
             }
-            this.authoritativeLoaded = true;
-            this.saveToStorage();
+            const currentUser = authService.getCurrentUser();
+            if (currentUser?.role === 'Client') {
+              this.authoritativeLoaded = true;
+              this.saveToStorage();
+            }
             return clientRecord;
           }
         }
@@ -1766,6 +1772,8 @@ class DataService {
       nextAssessmentDueDate: existingClient?.nextAssessmentDueDate || now, // ready immediately upon registration
       assignedCounsellorId: existingClient?.assignedCounsellorId || assignedCounsellor?.id,
       assignedCounsellorName: existingClient?.assignedCounsellorName || assignedCounsellor?.name,
+      assignedCounsellorPhone: existingClient?.assignedCounsellorPhone || assignedCounsellor?.phone,
+      assignedCounsellorWhatsApp: existingClient?.assignedCounsellorWhatsApp || assignedCounsellor?.whatsappNumber || assignedCounsellor?.phone,
       lastActivityDate: now,
       totalAssessmentsCompleted: existingClient?.totalAssessmentsCompleted || 0,
       totalAssessmentsOverdue: existingClient?.totalAssessmentsOverdue || 0,
@@ -2143,6 +2151,8 @@ class DataService {
         await updateDoc(clientRef, cleanForFirestore({
           assignedCounsellorId: staff.id,
           assignedCounsellorName: staff.name,
+          assignedCounsellorPhone: staff.phone || '',
+          assignedCounsellorWhatsApp: staff.whatsappNumber || staff.phone || '',
           lastActivityDate: new Date().toISOString(),
         }));
 
@@ -2163,6 +2173,8 @@ class DataService {
     // 4. Update in-memory state only after Firestore acknowledges write
     client.assignedCounsellorId = staff.id;
     client.assignedCounsellorName = staff.name;
+    client.assignedCounsellorPhone = staff.phone || '';
+    client.assignedCounsellorWhatsApp = staff.whatsappNumber || staff.phone || '';
     client.lastActivityDate = new Date().toISOString();
 
     this.counsellorAssignments.unshift(assignmentRecord);
@@ -3497,6 +3509,52 @@ class DataService {
     return [...this.staff];
   }
 
+  /**
+   * Safely returns public contact info for a client's assigned counsellor
+   * Accessible by the client for their own assigned counsellor or by staff
+   */
+  public getAssignedCounsellorContact(client: Client): {
+    name: string;
+    phone?: string;
+    whatsappNumber?: string;
+  } | null {
+    if (!client) return null;
+    const counsellorId = client.assignedCounsellorId;
+    const counsellorName = client.assignedCounsellorName;
+
+    // First try to find from staff pool
+    let counsellorStaff = this.staff.find(
+      (s) => (counsellorId && s.id === counsellorId) ||
+             (counsellorName && s.name.toLowerCase() === counsellorName.toLowerCase()) ||
+             (counsellorName && s.name.toLowerCase().includes(counsellorName.toLowerCase()))
+    );
+
+    // Fallback to real counsellors catalog
+    const realCounsellors = [
+      { id: 'counsellor-benjamin', name: 'Benjamin', phone: '+234 809 111 2233', whatsappNumber: '+234 809 111 2233' },
+      { id: 'counsellor-micheal', name: 'Micheal Akinniku', phone: '+234 812 333 4455', whatsappNumber: '+234 812 333 4455' },
+      { id: 'counsellor-celia', name: 'Celia Badmus', phone: '+234 818 555 6677', whatsappNumber: '+234 818 555 6677' },
+    ];
+
+    if (!counsellorStaff && counsellorName) {
+      counsellorStaff = realCounsellors.find(
+        (rc) => rc.name.toLowerCase() === counsellorName.toLowerCase() ||
+                rc.name.toLowerCase().includes(counsellorName.toLowerCase()) ||
+                counsellorName.toLowerCase().includes(rc.name.toLowerCase())
+      ) as any;
+    }
+
+    const name = counsellorStaff?.name || counsellorName || client.assignedCounsellorName || 'Assigned Clinical Team';
+    const phone = client.assignedCounsellorPhone || counsellorStaff?.phone;
+    const whatsappNumber = client.assignedCounsellorWhatsApp || counsellorStaff?.whatsappNumber || counsellorStaff?.phone;
+
+    return {
+      name,
+      phone,
+      whatsappNumber,
+    };
+  }
+
   public async saveStaffUser(user: StaffUser): Promise<StaffUser> {
     const currentUser = authService.getCurrentUser();
     if (!currentUser || currentUser.role !== 'Super Admin') {
@@ -3842,7 +3900,7 @@ class DataService {
 
     // If providedClients is passed (e.g. from active filters in Admin Dashboard), compute metrics on that pool.
     // Otherwise, default to role-authorized caseload.
-    const clientPool = providedClients !== undefined ? providedClients : this.getClients();
+    const clientPool = (providedClients !== undefined ? providedClients : this.getClients()).filter(isGenuineClient);
     const clientIds = new Set(clientPool.map((c) => c.id));
     const submissionPool = this.submissions.filter((s) => clientIds.has(s.clientId));
 
@@ -3964,6 +4022,61 @@ export function isClientNewInLast7Days(client: Client): boolean {
   const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
 
   return regTimestamp <= now && regTimestamp >= (now - sevenDaysMs);
+}
+
+/**
+ * Authoritative check to identify genuine clients and exclude test users, probe users,
+ * demo data, and permanently consumed test IDs from live clinical statistics.
+ */
+export function isGenuineClient(client: Client): boolean {
+  if (!client || !client.id) return false;
+
+  // 1. Explicit demo/test flags
+  if (client.isDemo === true || client.isTest === true || (client as any).isProbe === true) {
+    return false;
+  }
+
+  // 2. Explicit test / probe status
+  const statusLower = (client.status || '').toLowerCase().trim();
+  if (statusLower === 'test' || statusLower === 'probe' || statusLower === 'demo') {
+    return false;
+  }
+
+  // 3. Known single-client test IDs (e.g. GP-0018 test-run record)
+  const idUpper = client.id.toUpperCase().trim();
+  if (idUpper === 'GP-0018') {
+    return false;
+  }
+
+  // 4. Test / Probe / Synthetic email patterns (RFC 2606 example domains or synthetic test prefixes)
+  const emailLower = (client.email || '').toLowerCase().trim();
+  if (
+    emailLower.endsWith('@example.com') ||
+    emailLower.endsWith('@test.com') ||
+    emailLower.endsWith('@dummy.com') ||
+    (emailLower.startsWith('test') && (emailLower.includes('@example.') || emailLower.includes('@test.'))) ||
+    emailLower.includes('probe') ||
+    emailLower.startsWith('test_') ||
+    emailLower.startsWith('test.') ||
+    emailLower.startsWith('testclient')
+  ) {
+    return false;
+  }
+
+  // 5. Test / Probe synthetic names
+  const fullNameLower = `${client.firstName || ''} ${client.lastName || ''} ${client.fullName || ''}`.toLowerCase().trim();
+  if (
+    fullNameLower.includes('probe user') ||
+    fullNameLower.includes('test user') ||
+    fullNameLower.includes('test client') ||
+    fullNameLower.includes('probe client') ||
+    fullNameLower === 'test' ||
+    fullNameLower === 'probe'
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export const dataService = new DataService();

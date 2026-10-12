@@ -479,7 +479,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Metric Summary Cards Calculated on filteredClients */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         {/* 1. Total Clients */}
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => {
+            setSelectedStatus('all');
+            setSelectedRiskLevel('all');
+            setDateRange('all');
+          }}
+          className={`bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedStatus === 'all' && selectedRiskLevel === 'all' && dateRange === 'all' ? 'ring-2 ring-gray-900/10' : ''
+          }`}
+          title="Click to view all enrolled clients"
+        >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>Total Clients</span>
             <Users className="w-4 h-4 text-gray-400" />
@@ -489,7 +499,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 2. Active Clients */}
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => setSelectedStatus(selectedStatus === 'Active' ? 'all' : 'Active')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedStatus === 'Active' ? 'border-emerald-500 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-gray-200'
+          }`}
+          title="Click to filter by Active clients"
+        >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>Active</span>
             <UserCheck className="w-4 h-4 text-emerald-500" />
@@ -499,7 +515,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 3. New Clients */}
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => setDateRange(dateRange === '7d' ? 'all' : '7d')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            dateRange === '7d' ? 'border-red-500 bg-red-50/30 ring-2 ring-red-500/20' : 'border-gray-200'
+          }`}
+          title="Click to filter by clients registered in the last 7 days"
+        >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>New (7 Days)</span>
             <TrendingUp className="w-4 h-4 text-gray-400" />
@@ -509,7 +531,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 4. Due Today */}
-        <div className="bg-white p-4 rounded-xl border border-amber-200 bg-amber-50/20 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => setSelectedStatus(selectedStatus === 'Assessment Due' ? 'all' : 'Assessment Due')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedStatus === 'Assessment Due'
+              ? 'border-amber-500 bg-amber-100/50 ring-2 ring-amber-500/30'
+              : 'border-amber-200 bg-amber-50/20'
+          }`}
+          title="Click to filter by Assessment Due clients"
+        >
           <div className="flex items-center justify-between text-amber-700 text-xs font-medium">
             <span>Due Today</span>
             <Clock className="w-4 h-4 text-amber-500" />
@@ -519,7 +549,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 5. Overdue */}
-        <div className="bg-white p-4 rounded-xl border border-red-200 bg-red-50/20 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => setSelectedStatus(selectedStatus === 'Overdue' ? 'all' : 'Overdue')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedStatus === 'Overdue'
+              ? 'border-red-500 bg-red-100/50 ring-2 ring-red-500/30'
+              : 'border-red-200 bg-red-50/20'
+          }`}
+          title="Click to filter by Overdue clients"
+        >
           <div className="flex items-center justify-between text-red-700 text-xs font-medium">
             <span>Overdue</span>
             <AlertTriangle className="w-4 h-4 text-red-500" />
@@ -529,7 +567,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 6. Completed Submissions */}
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+        <div
+          onClick={() => setSelectedStatus(selectedStatus === 'Completed' ? 'all' : 'Completed')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedStatus === 'Completed' ? 'border-emerald-500 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-gray-200'
+          }`}
+          title="Click to filter by Completed clients"
+        >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>Completed</span>
             <CheckCircle className="w-4 h-4 text-emerald-600" />
@@ -539,7 +583,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* 7. Requiring Follow-up */}
-        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between col-span-2 sm:col-span-1">
+        <div
+          onClick={() => setSelectedRiskLevel(selectedRiskLevel === 'High' ? 'all' : 'High')}
+          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between col-span-2 sm:col-span-1 cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
+            selectedRiskLevel === 'High' ? 'border-red-500 bg-red-100/50 ring-2 ring-red-500/30' : 'border-gray-200'
+          }`}
+          title="Click to filter by High Risk clients"
+        >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>High Priority</span>
             <Activity className="w-4 h-4 text-red-600" />

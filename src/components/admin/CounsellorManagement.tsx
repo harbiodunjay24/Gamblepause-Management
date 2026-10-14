@@ -43,6 +43,14 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
   const [newCounsellorPhone, setNewCounsellorPhone] = useState('');
   const [newCounsellorPassword, setNewCounsellorPassword] = useState('');
 
+  // Duplicate resolution state for Super Admins
+  const [duplicateCandidate, setDuplicateCandidate] = useState<StaffUser | null>(null);
+  const [canonicalCandidate, setCanonicalCandidate] = useState<StaffUser | null>(null);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+  const [duplicateConfirmText, setDuplicateConfirmText] = useState('');
+  const [isResolvingDuplicate, setIsResolvingDuplicate] = useState(false);
+  const [duplicateResolutionError, setDuplicateResolutionError] = useState<string | null>(null);
+
   const staff = dataService.getStaff();
   const allClients = dataService.getClients();
 
@@ -123,6 +131,57 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
       setFeedbackMessage({ type: 'error', text: res.error || 'Failed to reactivate counsellor.' });
     }
     setTimeout(() => setFeedbackMessage(null), 5000);
+  };
+
+  const handleOpenDuplicateModal = (candidate: StaffUser) => {
+    setDuplicateCandidate(candidate);
+    const matches = counsellors.filter(
+      (c) => c.id !== candidate.id && c.email.toLowerCase() === candidate.email.toLowerCase()
+    );
+    const canonical =
+      matches.find((c) => c.authUid && c.authUid !== c.id) ||
+      matches.find((c) => (c.assignedClientsCount || 0) > 0) ||
+      matches[0] ||
+      null;
+    setCanonicalCandidate(canonical);
+    setDuplicateConfirmText('');
+    setDuplicateResolutionError(null);
+    setShowDuplicateModal(true);
+  };
+
+  const handleExecuteDuplicateRemoval = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDuplicateResolutionError(null);
+    if (!duplicateCandidate || !canonicalCandidate) return;
+
+    setIsResolvingDuplicate(true);
+    try {
+      const res = await dataService.removeDuplicateStaffRecord({
+        duplicateStaffId: duplicateCandidate.id,
+        canonicalStaffId: canonicalCandidate.id,
+        confirmationText: duplicateConfirmText,
+      });
+
+      if (!res.success) {
+        setDuplicateResolutionError(res.error || 'Failed to remove duplicate counsellor record.');
+        setIsResolvingDuplicate(false);
+        return;
+      }
+
+      setShowDuplicateModal(false);
+      setDuplicateCandidate(null);
+      setCanonicalCandidate(null);
+      setDuplicateConfirmText('');
+      setFeedbackMessage({
+        type: 'success',
+        text: res.message || 'Duplicate counsellor record removed successfully.',
+      });
+      setTimeout(() => setFeedbackMessage(null), 8000);
+    } catch (err: any) {
+      setDuplicateResolutionError(err?.message || 'Error removing duplicate counsellor.');
+    } finally {
+      setIsResolvingDuplicate(false);
+    }
   };
 
   const handleCreateCounsellor = async (e: React.FormEvent) => {
@@ -335,8 +394,15 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
                               .toUpperCase()}
                           </div>
                           <div>
-                            <div className="font-bold text-gray-900 text-sm">{c.name}</div>
-                            <div className="text-[11px] text-gray-400">ID: {c.id}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-gray-900 text-sm">{c.name}</span>
+                              {counsellors.some((other) => other.id !== c.id && other.email.toLowerCase() === c.email.toLowerCase()) && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                  Duplicate
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-gray-400 font-mono">ID: {c.id}</div>
                           </div>
                         </div>
                       </td>
@@ -434,6 +500,16 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
                               className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-bold rounded-lg transition-all cursor-pointer"
                             >
                               Reactivate
+                            </button>
+                          )}
+
+                          {currentUser.role === 'Super Admin' && (
+                            <button
+                              onClick={() => handleOpenDuplicateModal(c)}
+                              className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold rounded-lg transition-all cursor-pointer"
+                              title="Safely remove accidental duplicate counsellor record"
+                            >
+                              Resolve Duplicate
                             </button>
                           )}
                         </div>
@@ -601,6 +677,137 @@ export const CounsellorManagement: React.FC<CounsellorManagementProps> = ({
                   className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl cursor-pointer"
                 >
                   Create Counsellor
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Super Admin Duplicate Counsellor Removal Modal */}
+      {showDuplicateModal && duplicateCandidate && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-xl w-full space-y-4 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center border border-red-200 shrink-0">
+                  <UserX className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-950">
+                    Safely Resolve Duplicate Counsellor Account
+                  </h3>
+                  <p className="text-[11px] text-gray-500">
+                    Authorised Super Admin duplicate reconciliation and removal
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowDuplicateModal(false);
+                  setDuplicateCandidate(null);
+                  setCanonicalCandidate(null);
+                }}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {duplicateResolutionError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{duplicateResolutionError}</span>
+              </div>
+            )}
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+              <span className="font-bold">Clinical & Identity Safety Guarantee:</span>
+              <p className="text-[11px]">
+                The canonical counsellor's legitimate staff profile, Firebase Authentication account, client assignments, case notes, notifications, and audit logs are 100% retained. Only the accidental duplicate record is removed.
+              </p>
+            </div>
+
+            {/* Record Comparison Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              {/* Duplicate Record (To Remove) */}
+              <div className="p-3.5 bg-red-50/60 border border-red-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between border-b border-red-200/80 pb-1.5">
+                  <span className="font-bold text-red-900 uppercase text-[10px] tracking-wider">Duplicate Record (To Remove)</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800">Redundant</span>
+                </div>
+                <div className="space-y-1 text-[11px]">
+                  <div>Name: <strong>{duplicateCandidate.name}</strong></div>
+                  <div>Email: <strong className="font-mono text-[10px]">{duplicateCandidate.email}</strong></div>
+                  <div>Phone: <span>{duplicateCandidate.phone || '09037982390'}</span></div>
+                  <div>Internal ID: <strong className="font-mono text-[10px] text-red-700">{duplicateCandidate.id}</strong></div>
+                  <div>Role: <strong>{duplicateCandidate.role}</strong></div>
+                  <div>Status: <span className="font-semibold">{duplicateCandidate.status || (duplicateCandidate.active ? 'Active' : 'Inactive')}</span></div>
+                  <div>Caseload: <strong>{duplicateCandidate.assignedClientsCount || 0} clients</strong></div>
+                  <div>Auth UID: <span className="font-mono text-[10px] text-gray-600">{duplicateCandidate.authUid || 'None (No real Auth account)'}</span></div>
+                </div>
+              </div>
+
+              {/* Canonical Record (To Retain) */}
+              <div className="p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between border-b border-emerald-200/80 pb-1.5">
+                  <span className="font-bold text-emerald-900 uppercase text-[10px] tracking-wider">Canonical Record (To Retain)</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-200 text-emerald-800">Retained</span>
+                </div>
+                {canonicalCandidate ? (
+                  <div className="space-y-1 text-[11px]">
+                    <div>Name: <strong>{canonicalCandidate.name}</strong></div>
+                    <div>Email: <strong className="font-mono text-[10px]">{canonicalCandidate.email}</strong></div>
+                    <div>Phone: <span>{canonicalCandidate.phone || '09037982390'}</span></div>
+                    <div>Internal ID: <strong className="font-mono text-[10px] text-emerald-800">{canonicalCandidate.id}</strong></div>
+                    <div>Role: <strong>{canonicalCandidate.role}</strong></div>
+                    <div>Status: <span className="font-semibold text-emerald-700">{canonicalCandidate.status || (canonicalCandidate.active ? 'Active' : 'Inactive')}</span></div>
+                    <div>Caseload: <strong>{canonicalCandidate.assignedClientsCount || 0} clients</strong></div>
+                    <div>Auth UID: <span className="font-mono text-[10px] text-emerald-700 font-bold">{canonicalCandidate.authUid || 'Configured'}</span></div>
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-xs italic">Canonical counsellor verified.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Confirmation Form */}
+            <form onSubmit={handleExecuteDuplicateRemoval} className="space-y-3.5 text-xs pt-1 border-t border-gray-100">
+              <div>
+                <label className="block font-bold text-gray-800 mb-1">
+                  Type <span className="font-mono text-red-600 bg-red-50 px-1 py-0.5 rounded font-bold">{duplicateCandidate.id}</span> or <span className="font-mono text-red-600 bg-red-50 px-1 py-0.5 rounded font-bold">DELETE DUPLICATE</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder={`Enter ${duplicateCandidate.id} or DELETE DUPLICATE`}
+                  value={duplicateConfirmText}
+                  onChange={(e) => setDuplicateConfirmText(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 font-mono text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDuplicateModal(false);
+                    setDuplicateCandidate(null);
+                    setCanonicalCandidate(null);
+                  }}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isResolvingDuplicate ||
+                    (duplicateConfirmText.trim().toLowerCase() !== duplicateCandidate.id.toLowerCase() &&
+                      duplicateConfirmText.trim().toLowerCase() !== 'delete duplicate')
+                  }
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {isResolvingDuplicate ? 'Removing Duplicate...' : 'Permanently Remove Duplicate Counsellor'}
                 </button>
               </div>
             </form>

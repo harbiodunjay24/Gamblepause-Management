@@ -1092,7 +1092,17 @@ class DataService {
         if (firestoreNotifs.length > 0) {
           const nMap = new Map<string, NotificationLog>();
           for (const n of this.notifications) nMap.set(n.id, n);
-          for (const fn of firestoreNotifs) nMap.set(fn.id, fn);
+          for (const fn of firestoreNotifs) {
+            const existing = nMap.get(fn.id);
+            const isRead = Boolean(fn.isRead || existing?.isRead);
+            const readBy = Array.from(new Set([...(fn.readBy || []), ...(existing?.readBy || [])]));
+            nMap.set(fn.id, {
+              ...fn,
+              isRead,
+              readBy,
+              readAt: fn.readAt || existing?.readAt,
+            });
+          }
           this.notifications = Array.from(nMap.values()).sort(
             (a, b) => new Date(b.scheduledFor || b.sentAt || 0).getTime() - new Date(a.scheduledFor || a.sentAt || 0).getTime()
           );
@@ -1125,7 +1135,17 @@ class DataService {
         if (firestoreNotifs.length > 0) {
           const nMap = new Map<string, NotificationLog>();
           for (const n of this.notifications) nMap.set(n.id, n);
-          for (const fn of firestoreNotifs) nMap.set(fn.id, fn);
+          for (const fn of firestoreNotifs) {
+            const existing = nMap.get(fn.id);
+            const isRead = Boolean(fn.isRead || existing?.isRead);
+            const readBy = Array.from(new Set([...(fn.readBy || []), ...(existing?.readBy || [])]));
+            nMap.set(fn.id, {
+              ...fn,
+              isRead,
+              readBy,
+              readAt: fn.readAt || existing?.readAt,
+            });
+          }
           this.notifications = Array.from(nMap.values()).sort(
             (a, b) => new Date(b.scheduledFor || b.sentAt || 0).getTime() - new Date(a.scheduledFor || a.sentAt || 0).getTime()
           );
@@ -1529,16 +1549,20 @@ class DataService {
               ...data,
               isDemo: Boolean(data.isDemo),
             };
-            const existingIndex = this.clients.findIndex((c) => c.id === clientRecord.id);
-            if (existingIndex >= 0) {
-              this.clients[existingIndex] = clientRecord;
-            } else {
-              this.clients.unshift(clientRecord);
-            }
             const currentUser = authService.getCurrentUser();
             if (currentUser?.role === 'Client') {
-              this.authoritativeLoaded = true;
+              const existingIndex = this.clients.findIndex((c) => c.id === clientRecord.id);
+              if (existingIndex >= 0) {
+                this.clients[existingIndex] = clientRecord;
+              } else {
+                this.clients.unshift(clientRecord);
+              }
               this.saveToStorage();
+            } else {
+              const existingIndex = this.clients.findIndex((c) => c.id === clientRecord.id);
+              if (existingIndex >= 0) {
+                this.clients[existingIndex] = clientRecord;
+              }
             }
             return clientRecord;
           }
@@ -2545,6 +2569,179 @@ class DataService {
     };
   }
 
+  /**
+   * Super Admin-only duplicate staff removal workflow.
+   * - Validates caller is Super Admin.
+   * - Strictly ensures canonical record is NOT deleted and canonical Auth UID is NEVER touched.
+   * - Reconciles any assigned clients, case notes, or notifications from duplicate to canonical.
+   * - Deletes duplicate staff record from Firestore and local cache.
+   * - Deletes orphan user document for duplicate if present.
+   * - Refreshes staff directory and recomputes live caseloads.
+   * - Logs audit trail entry for accountability.
+   */
+  public async removeDuplicateStaffRecord(params: {
+    duplicateStaffId: string;
+    canonicalStaffId: string;
+    confirmationText: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    message?: string;
+    clientsReconciled?: number;
+    notesReconciled?: number;
+  }> {
+    const user = authService.getCurrentUser();
+    if (!user || user.role !== 'Super Admin') {
+      return { success: false, error: 'Unauthorized: Only Super Admins can remove duplicate staff accounts.' };
+    }
+
+    const { duplicateStaffId, canonicalStaffId, confirmationText } = params;
+
+    if (!duplicateStaffId || !canonicalStaffId) {
+      return { success: false, error: 'Both duplicate and canonical staff IDs are required.' };
+    }
+
+    if (duplicateStaffId === canonicalStaffId) {
+      return { success: false, error: 'Duplicate staff ID cannot be identical to the canonical ID.' };
+    }
+
+    const duplicateStaff = this.staff.find((s) => s.id === duplicateStaffId);
+    const canonicalStaff = this.staff.find((s) => s.id === canonicalStaffId);
+
+    if (!duplicateStaff) {
+      return { success: false, error: `Duplicate staff record "${duplicateStaffId}" not found in directory.` };
+    }
+    if (!canonicalStaff) {
+      return { success: false, error: `Canonical staff record "${canonicalStaffId}" not found in directory.` };
+    }
+
+    if (duplicateStaff.role === 'Super Admin') {
+      return { success: false, error: 'Safety Guard: Super Admin records cannot be deleted as duplicates.' };
+    }
+
+    const cleanConfirm = confirmationText.trim().toLowerCase();
+    const matchesId = duplicateStaff.id.toLowerCase() === cleanConfirm;
+    const matchesName = duplicateStaff.name.toLowerCase() === cleanConfirm;
+    const matchesKeyword = cleanConfirm === 'delete duplicate' || cleanConfirm === 'remove duplicate';
+
+    if (!matchesId && !matchesName && !matchesKeyword) {
+      return {
+        success: false,
+        error: `Confirmation mismatch. Please enter "${duplicateStaff.id}" or "DELETE DUPLICATE" to confirm.`,
+      };
+    }
+
+    const canonicalAuthUid = canonicalStaff.authUid;
+    const duplicateAuthUid = duplicateStaff.authUid;
+
+    let clientsReconciled = 0;
+    let notesReconciled = 0;
+
+    // 1. Reconcile client assignments in memory and Firestore
+    for (const c of this.clients) {
+      if (c.assignedCounsellorId === duplicateStaffId || (duplicateAuthUid && c.assignedCounsellorId === duplicateAuthUid)) {
+        c.assignedCounsellorId = canonicalStaff.id;
+        c.assignedCounsellorName = canonicalStaff.name;
+        c.assignedCounsellorPhone = canonicalStaff.phone;
+        c.assignedCounsellorWhatsApp = canonicalStaff.whatsappNumber;
+        clientsReconciled++;
+        if (db && isFirebaseConfigured) {
+          try {
+            await updateDoc(doc(db, 'clients', c.id), {
+              assignedCounsellorId: canonicalStaff.id,
+              assignedCounsellorName: canonicalStaff.name,
+              assignedCounsellorPhone: canonicalStaff.phone || '',
+              assignedCounsellorWhatsApp: canonicalStaff.whatsappNumber || '',
+            });
+          } catch (e) {
+            console.warn('[dataService] Notice updating client assignment during duplicate resolution:', e);
+          }
+        }
+      }
+    }
+
+    // 2. Reconcile case notes
+    for (const note of this.caseNotes) {
+      if (note.authorId === duplicateStaffId) {
+        note.authorId = canonicalStaff.id;
+        note.authorName = canonicalStaff.name;
+        notesReconciled++;
+        if (db && isFirebaseConfigured) {
+          try {
+            await updateDoc(doc(db, 'caseNotes', note.id), {
+              authorId: canonicalStaff.id,
+              authorName: canonicalStaff.name,
+            });
+          } catch (e) {
+            console.warn('[dataService] Notice updating caseNote during duplicate resolution:', e);
+          }
+        }
+      }
+    }
+
+    // 3. Delete duplicate from Firestore
+    if (db && isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'staff', duplicateStaffId));
+        // Delete orphan user doc if it exists and DOES NOT MATCH canonical Auth UID
+        if (duplicateStaffId !== canonicalAuthUid) {
+          await deleteDoc(doc(db, 'users', duplicateStaffId)).catch(() => {});
+        }
+        if (duplicateAuthUid && duplicateAuthUid !== canonicalAuthUid && duplicateAuthUid !== duplicateStaffId) {
+          await deleteDoc(doc(db, 'users', duplicateAuthUid)).catch(() => {});
+        }
+      } catch (err: any) {
+        console.error('[dataService] Error deleting duplicate record in Firestore:', err);
+        return { success: false, error: `Firestore error: ${err?.message || err}` };
+      }
+    }
+
+    // 4. Call server endpoint to ensure backend state synchronization
+    try {
+      let idToken = '';
+      if (auth.currentUser) {
+        idToken = await auth.currentUser.getIdToken().catch(() => '');
+      }
+      await fetch('/api/admin/remove-duplicate-staff', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+        body: JSON.stringify({
+          duplicateStaffId,
+          canonicalStaffId,
+          confirmationCode: confirmationText,
+          adminEmail: user.email,
+        }),
+      }).catch((e) => console.warn('[dataService] Backend duplicate staff sync notice:', e));
+    } catch (apiErr) {
+      console.warn('[dataService] Backend duplicate removal API notice:', apiErr);
+    }
+
+    // 5. Remove duplicate from in-memory staff list and update canonical caseload
+    this.staff = this.staff.filter((s) => s.id !== duplicateStaffId);
+    canonicalStaff.assignedClientsCount = this.clients.filter((c) => c.assignedCounsellorId === canonicalStaff.id).length;
+
+    // 6. Audit log
+    this.logAudit(
+      'RESOLVE_DUPLICATE_STAFF',
+      'Staff',
+      duplicateStaffId,
+      `Super Admin "${user.name}" removed duplicate counsellor record "${duplicateStaffId}". Canonical record "${canonicalStaffId}" (${canonicalStaff.name}) retained. Clients reconciled: ${clientsReconciled}, Notes reconciled: ${notesReconciled}.`
+    );
+
+    this.saveToStorage();
+    this.notify();
+
+    return {
+      success: true,
+      message: `Accidental duplicate counsellor record "${duplicateStaffId}" was successfully removed. Canonical account "${canonicalStaff.name}" (${canonicalStaff.id}) was retained intact with all clinical assignments.`,
+      clientsReconciled,
+      notesReconciled,
+    };
+  }
+
   public getCounsellorNotifications(counsellorId?: string, counsellorName?: string): NotificationLog[] {
     const user = authService.getCurrentUser();
     const targetId = counsellorId || user?.id;
@@ -2566,12 +2763,83 @@ class DataService {
     });
   }
 
-  public markNotificationAsRead(id: string): void {
+  public isNotificationRead(notif: NotificationLog, userId?: string): boolean {
+    if (!notif) return false;
+    const currentUid = userId || authService.getCurrentUser()?.id;
+    if (currentUid && Array.isArray(notif.readBy) && notif.readBy.includes(currentUid)) {
+      return true;
+    }
+    // For recipient-targeted notifications: if targeted to this specific user
+    const isTargetedToUser = Boolean(
+      currentUid &&
+        (notif.counsellorId === currentUid ||
+          notif.recipientUserId === currentUid ||
+          notif.recipientTarget === currentUid)
+    );
+    if (isTargetedToUser && notif.isRead) {
+      return true;
+    }
+    // If not targeted specifically to this user (e.g. shared announcement or general),
+    // require readBy to contain this user's ID so that one user reading doesn't mark it read for another
+    if (!notif.counsellorId && !notif.recipientUserId) {
+      return Boolean(currentUid && Array.isArray(notif.readBy) && notif.readBy.includes(currentUid));
+    }
+    return Boolean(notif.isRead);
+  }
+
+  public async markNotificationAsRead(id: string): Promise<void> {
+    const user = authService.getCurrentUser();
     const notif = this.notifications.find((n) => n.id === id);
-    if (notif) {
+    if (!notif) return;
+
+    const now = new Date().toISOString();
+    notif.isRead = true;
+    notif.readAt = now;
+    if (user?.id) {
+      notif.readBy = Array.from(new Set([...(notif.readBy || []), user.id]));
+    }
+    this.saveToStorage();
+    this.notify();
+
+    if (db && isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'notifications', id), cleanForFirestore(notif), { merge: true });
+        console.log(`[Firestore] Persisted notification read-state for ${id}`);
+      } catch (err: any) {
+        console.warn(`[Firestore] Notice persisting read-state for notification ${id}:`, err?.message || err);
+      }
+    }
+  }
+
+  public async markAllNotificationsAsRead(recipientId?: string): Promise<void> {
+    const user = authService.getCurrentUser();
+    const targetUserId = recipientId || user?.id;
+    const targetNotifications = this.getCounsellorNotifications(targetUserId, user?.name);
+
+    if (targetNotifications.length === 0) return;
+
+    const now = new Date().toISOString();
+    for (const notif of targetNotifications) {
       notif.isRead = true;
-      this.saveToStorage();
-      this.notify();
+      notif.readAt = now;
+      if (user?.id) {
+        notif.readBy = Array.from(new Set([...(notif.readBy || []), user.id]));
+      }
+    }
+    this.saveToStorage();
+    this.notify();
+
+    if (db && isFirebaseConfigured) {
+      try {
+        const batch = writeBatch(db);
+        for (const notif of targetNotifications) {
+          batch.set(doc(db, 'notifications', notif.id), cleanForFirestore(notif), { merge: true });
+        }
+        await batch.commit();
+        console.log(`[Firestore] Batch marked ${targetNotifications.length} notifications as read.`);
+      } catch (err: any) {
+        console.warn('[Firestore] Batch mark-read notice:', err?.message || err);
+      }
     }
   }
 
@@ -3748,104 +4016,106 @@ class DataService {
   }
 
   /**
-   * Links and synchronizes Steven Benjamin's Super Admin profile in Firestore
-   * using the actual Firebase Authentication UID generated in Firebase Console.
+   * Generically links and synchronizes any staff or Super Admin member's Firestore profile
+   * using their authoritative Firebase Authentication UID.
    */
-  public async syncStevenBenjamin(uid: string): Promise<{ success: boolean; error?: string }> {
+  public async linkStaffAuthAccount(params: {
+    staffId: string;
+    authUid: string;
+  }): Promise<{ success: boolean; error?: string }> {
     const currentUser = authService.getCurrentUser();
     if (!currentUser || currentUser.role !== 'Super Admin') {
-      return { success: false, error: 'Unauthorized: Only Super Admins can configure Super Admin profiles.' };
+      return { success: false, error: 'Unauthorized: Only Super Admins can configure staff profiles.' };
     }
 
-    const cleanUid = (uid || '').trim();
+    const { staffId, authUid } = params;
+    const cleanUid = (authUid || '').trim();
     if (!cleanUid || cleanUid.length < 5) {
-      return { success: false, error: 'Please enter a valid Firebase Authentication UID from the Firebase Console.' };
+      return { success: false, error: 'Please enter a valid Firebase Authentication UID.' };
     }
 
-    const stevenProfile: StaffUser = {
-      id: 'staff-steven',
+    const staffMember = this.staff.find((s) => s.id === staffId);
+    if (!staffMember) {
+      return { success: false, error: 'Staff member record not found.' };
+    }
+
+    const updatedProfile: StaffUser = {
+      ...staffMember,
       authUid: cleanUid,
-      name: 'Steven Benjamin',
-      email: 'stevobenjo@gmail.com',
-      role: 'Super Admin',
-      active: true,
-      status: 'Active',
-      phone: '+234 800 000 0000',
-      assignedClientsCount: 0,
+      active: staffMember.active !== false,
+      status: staffMember.status || 'Active',
     };
 
     if (db && isFirebaseConfigured) {
       try {
-        // Write to users/{uid} with actual Firebase Auth UID as document ID
         await setDoc(
           doc(db, 'users', cleanUid),
           {
             id: cleanUid,
             authUid: cleanUid,
-            name: stevenProfile.name,
-            email: stevenProfile.email,
-            role: 'Super Admin',
-            active: true,
-            status: 'Active',
+            name: updatedProfile.name,
+            email: updatedProfile.email.toLowerCase(),
+            role: updatedProfile.role,
+            active: updatedProfile.active,
+            status: updatedProfile.status,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           },
           { merge: true }
         );
 
-        // Also write to staff/staff-steven
         await setDoc(
-          doc(db, 'staff', stevenProfile.id),
+          doc(db, 'staff', staffMember.id),
           {
-            ...stevenProfile,
+            ...updatedProfile,
             updatedAt: serverTimestamp(),
           },
           { merge: true }
         );
 
-        // Audit log
-        try {
-          const auditRef = doc(collection(db, 'auditLogs'));
-          await setDoc(auditRef, {
-            id: auditRef.id,
-            action: 'superadmin_registered',
-            targetType: 'Staff',
-            targetId: cleanUid,
-            targetUid: cleanUid,
-            name: 'Steven Benjamin',
-            email: 'stevobenjo@gmail.com',
-            performedByUid: currentUser.id,
-            performedByEmail: currentUser.email,
-            timestamp: new Date().toISOString(),
-            createdAt: serverTimestamp(),
-          });
-        } catch {}
-
-        console.log(`[Firestore] Steven Benjamin Super Admin profile created/synced at users/${cleanUid}`);
+        this.logAudit(
+          'STAFF_AUTH_LINKED',
+          'Staff',
+          cleanUid,
+          `Linked ${updatedProfile.name} (${updatedProfile.role}) to Firebase Auth UID ${cleanUid} by ${currentUser.name || currentUser.email}`
+        );
       } catch (err: any) {
-        console.error('[DataService] Error saving Steven Benjamin in Firestore:', err);
+        console.error('[DataService] Error linking staff account in Firestore:', err);
         return { success: false, error: err?.message || 'Firestore write error' };
       }
     }
 
-    // Update in-memory state
-    const existingIdx = this.staff.findIndex(
-      (s) => s.authUid === cleanUid || s.email?.toLowerCase() === stevenProfile.email.toLowerCase()
-    );
+    const existingIdx = this.staff.findIndex((s) => s.id === staffMember.id);
     if (existingIdx >= 0) {
-      this.staff[existingIdx] = { ...this.staff[existingIdx], ...stevenProfile };
+      this.staff[existingIdx] = updatedProfile;
     } else {
-      this.staff.push(stevenProfile);
+      this.staff.push(updatedProfile);
     }
     this.saveToStorage();
-    this.logAudit(
-      'SUPERADMIN_REGISTERED',
-      'Staff',
-      cleanUid,
-      `Steven Benjamin registered as Super Admin by ${currentUser.name || currentUser.email}`
-    );
     this.notify();
     return { success: true };
+  }
+
+  /**
+   * Backwards-compatible linkage method for Steven Benjamin, delegating to linkStaffAuthAccount.
+   */
+  public async syncStevenBenjamin(uid: string): Promise<{ success: boolean; error?: string }> {
+    let steven = this.staff.find((s) => s.email?.toLowerCase() === 'stevobenjo@gmail.com');
+    if (!steven) {
+      steven = {
+        id: 'staff-steven',
+        authUid: uid,
+        name: 'Steven Benjamin',
+        email: 'stevobenjo@gmail.com',
+        role: 'Super Admin',
+        active: true,
+        status: 'Active',
+        phone: '+234 800 000 0000',
+        assignedClientsCount: 0,
+      };
+      this.staff.push(steven);
+    }
+    return this.linkStaffAuthAccount({ staffId: steven.id, authUid: uid });
   }
 
   // --- Notifications ---
@@ -3863,9 +4133,18 @@ class DataService {
     const entry: NotificationLog = {
       ...notif,
       id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      isRead: false,
+      readBy: [],
     };
     this.notifications.unshift(entry);
     this.saveToStorage();
+    this.notify();
+
+    if (db && isFirebaseConfigured) {
+      setDoc(doc(db, 'notifications', entry.id), cleanForFirestore(entry)).catch((err) =>
+        console.warn('[Firestore] Notice persisting new notification:', err?.message || err)
+      );
+    }
     return entry;
   }
 
@@ -3921,12 +4200,8 @@ class DataService {
       return isToday || c.status === 'Assessment Due';
     }).length;
 
-    // 4. Overdue: calculated from active cohort
-    const overdueAssessments = activeClientsCohort.filter((c) => {
-      if (c.status === 'Overdue') return true;
-      if (!c.nextAssessmentDueDate) return false;
-      return new Date(c.nextAssessmentDueDate).getTime() < Date.now();
-    }).length;
+    // 4. Overdue: calculated from active cohort authoritatively
+    const overdueAssessments = activeClientsCohort.filter((c) => isClientOverdue(c)).length;
 
     // 5. Completed assessments
     const completedAssessments = submissionPool.length;
@@ -4077,6 +4352,106 @@ export function isGenuineClient(client: Client): boolean {
   }
 
   return true;
+}
+
+/**
+ * Authoritative check if a client has an upcoming due assessment or scheduled check-in.
+ * Requirements:
+ * - Genuine registered client and active in pathway (not Completed, Closed, Archived, Inactive, Deactivated)
+ * - Must have a valid, parseable nextAssessmentDueDate
+ * - Due date falls within the upcoming window (>= start of today local time)
+ * - Must NOT be past-due / overdue (past-due clients belong strictly in Overdue)
+ * - Completed/cancelled tasks excluded
+ */
+export function isClientUpcomingDue(client: Client, now: Date = new Date()): boolean {
+  if (!client || !isGenuineClient(client) || !isClientActiveInPathway(client)) {
+    return false;
+  }
+  if (!client.nextAssessmentDueDate || typeof client.nextAssessmentDueDate !== 'string') {
+    return false;
+  }
+  const dueTimestamp = new Date(client.nextAssessmentDueDate).getTime();
+  if (isNaN(dueTimestamp)) {
+    return false;
+  }
+
+  // Client explicitly marked 'Overdue' belongs in Overdue, not Upcoming
+  if (client.status === 'Overdue') {
+    return false;
+  }
+
+  // If the due date has already passed prior to now, it belongs strictly in Overdue
+  if (dueTimestamp < now.getTime()) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Authoritative check if a client has an overdue assessment, scheduled check-in, or task.
+ * Requirements:
+ * - Genuine registered client and active in pathway (not Completed, Closed, Archived, Inactive, Deactivated)
+ * - Must have an outstanding assessment/task whose due date has passed (< now)
+ *   OR status is explicitly 'Overdue' with an uncompleted assessment
+ * - Completed or cancelled tasks excluded
+ */
+export function isClientOverdue(client: Client, now: Date = new Date()): boolean {
+  if (!client || !isGenuineClient(client) || !isClientActiveInPathway(client)) {
+    return false;
+  }
+
+  // If status is explicitly 'Overdue'
+  if (client.status === 'Overdue') {
+    return true;
+  }
+
+  if (!client.nextAssessmentDueDate || typeof client.nextAssessmentDueDate !== 'string') {
+    return false;
+  }
+
+  const dueTimestamp = new Date(client.nextAssessmentDueDate).getTime();
+  if (isNaN(dueTimestamp)) {
+    return false;
+  }
+
+  // Strictly in the past relative to now
+  return dueTimestamp < now.getTime();
+}
+
+/**
+ * Safe, crash-proof search utility for matching a client by query string.
+ * Supports: exact/partial Client ID, name, email, phone number, location, state, country, counsellor.
+ * Safely handles missing, null, or undefined fields without throwing TypeError: Cannot read properties of undefined.
+ */
+export function matchClientSearch(client: Client, queryText: string): boolean {
+  if (!client) return false;
+  if (!queryText || !queryText.trim()) return true;
+
+  const q = queryText.toLowerCase().trim();
+  const id = (client.id || '').toLowerCase();
+  const firstName = client.firstName || '';
+  const lastName = client.lastName || '';
+  const preferredName = client.preferredName || '';
+  const fullName = client.fullName || `${firstName} ${lastName}`;
+  const combinedName = `${firstName} ${lastName} ${preferredName} ${fullName}`.toLowerCase();
+  const email = (client.email || '').toLowerCase();
+
+  const phone = (client.phone || '').replace(/[^0-9]/g, '');
+  const qDigits = q.replace(/[^0-9]/g, '');
+  const phoneMatch = qDigits.length > 0 && phone.includes(qDigits);
+
+  const location = `${client.location || ''} ${client.state || ''} ${client.country || ''} ${client.address || ''}`.toLowerCase();
+  const counsellor = `${client.assignedCounsellorName || ''} ${client.assignedCounsellorId || ''}`.toLowerCase();
+
+  return (
+    id.includes(q) ||
+    combinedName.includes(q) ||
+    email.includes(q) ||
+    phoneMatch ||
+    location.includes(q) ||
+    counsellor.includes(q)
+  );
 }
 
 export const dataService = new DataService();

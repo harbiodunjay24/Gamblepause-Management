@@ -62,6 +62,7 @@ export default function App() {
 
   // Admin section sub-tab
   const [adminTab, setAdminTab] = useState<string>('dashboard');
+  const [clientListFilter, setClientListFilter] = useState<string>('all');
   const [selectedClientForProfile, setSelectedClientForProfile] = useState<Client | null>(null);
   const [previewForm, setPreviewForm] = useState<FormDefinition | null>(null);
 
@@ -121,7 +122,7 @@ export default function App() {
       return;
     }
     if (pathname === '/counsellor' || routeParam === 'counsellor') {
-      if (authService.isCounsellor() || authService.isSuperAdmin()) {
+      if (authService.isCounsellor() || authService.isSuperAdmin() || currentUser?.role === 'Super Admin' || currentUser?.role === 'Counsellor') {
         setCurrentRoute('counsellor-portal');
       } else {
         setCurrentRoute('admin-login');
@@ -130,16 +131,18 @@ export default function App() {
     }
     if (pathname.startsWith('/admin') || routeParam === 'admin') {
       if (authService.isAuthenticated() && !authService.isClient()) {
-        if (authService.isCounsellor()) {
+        if (authService.isSuperAdmin() || currentUser?.role === 'Super Admin') {
+          setCurrentRoute('admin-portal');
+        } else if (authService.isCounsellor() || currentUser?.role === 'Counsellor') {
           setCurrentRoute('counsellor-portal');
         } else {
           setCurrentRoute('admin-portal');
-          const clientIdParam = params.get('client') || params.get('clientId');
-          if (clientIdParam) {
-            const cl = dataService.getClientById(clientIdParam);
-            if (cl) {
-              setSelectedClientForProfile(cl);
-            }
+        }
+        const clientIdParam = params.get('client') || params.get('clientId');
+        if (clientIdParam) {
+          const cl = dataService.getClientById(clientIdParam);
+          if (cl) {
+            setSelectedClientForProfile(cl);
           }
         }
       } else {
@@ -501,13 +504,17 @@ export default function App() {
                 <AdminDashboard
                   currentUser={staffUser}
                   onSelectClient={(c) => handleSelectClientForProfile(c)}
-                  onNavigateTab={(tab) => setAdminTab(tab)}
+                  onNavigateTab={(tab, filter) => {
+                    setAdminTab(tab);
+                    if (filter) setClientListFilter(filter);
+                  }}
                 />
               )}
 
               {adminTab === 'clients' && (
                 <ClientList
                   currentUser={staffUser}
+                  initialFilter={clientListFilter}
                   onSelectClient={(c) => handleSelectClientForProfile(c)}
                   onNewClientClick={() => navigateTo('intake')}
                 />

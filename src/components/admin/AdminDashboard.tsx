@@ -23,7 +23,7 @@ import { NIGERIAN_STATES } from '../../data/demoData';
 interface AdminDashboardProps {
   currentUser: StaffUser;
   onSelectClient: (client: Client) => void;
-  onNavigateTab: (tab: string) => void;
+  onNavigateTab: (tab: string, filter?: string) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -532,38 +532,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         {/* 4. Due Today */}
         <div
-          onClick={() => setSelectedStatus(selectedStatus === 'Assessment Due' ? 'all' : 'Assessment Due')}
-          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
-            selectedStatus === 'Assessment Due'
-              ? 'border-amber-500 bg-amber-100/50 ring-2 ring-amber-500/30'
-              : 'border-amber-200 bg-amber-50/20'
-          }`}
-          title="Click to filter by Assessment Due clients"
+          onClick={() => onNavigateTab('clients', 'Upcoming Due')}
+          className="bg-white p-4 rounded-xl border border-amber-200 bg-amber-50/20 shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99]"
+          title="Click to view upcoming / due today clients table"
         >
           <div className="flex items-center justify-between text-amber-700 text-xs font-medium">
             <span>Due Today</span>
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
           <p className="text-2xl font-black text-amber-600 mt-2">{metrics.assessmentsDueToday}</p>
-          <span className="text-[10px] text-amber-700 mt-1">Ready to complete</span>
+          <div className="flex items-center justify-between mt-1 text-[10px]">
+            <span className="text-amber-700">Ready to complete</span>
+            <span className="font-bold text-amber-600 hover:underline flex items-center gap-0.5">
+              <span>View Table</span>
+              <ChevronRight className="w-3 h-3" />
+            </span>
+          </div>
         </div>
 
         {/* 5. Overdue */}
         <div
-          onClick={() => setSelectedStatus(selectedStatus === 'Overdue' ? 'all' : 'Overdue')}
-          className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
-            selectedStatus === 'Overdue'
-              ? 'border-red-500 bg-red-100/50 ring-2 ring-red-500/30'
-              : 'border-red-200 bg-red-50/20'
-          }`}
-          title="Click to filter by Overdue clients"
+          onClick={() => onNavigateTab('clients', 'Overdue')}
+          className="bg-white p-4 rounded-xl border border-red-200 bg-red-50/20 shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99]"
+          title="Click to view overdue clients table"
         >
           <div className="flex items-center justify-between text-red-700 text-xs font-medium">
             <span>Overdue</span>
             <AlertTriangle className="w-4 h-4 text-red-500" />
           </div>
           <p className="text-2xl font-black text-red-600 mt-2">{metrics.overdueAssessments}</p>
-          <span className="text-[10px] text-red-700 font-semibold mt-1">Alert triggered</span>
+          <div className="flex items-center justify-between mt-1 text-[10px]">
+            <span className="text-red-700 font-semibold">Alert triggered</span>
+            <span className="font-bold text-red-600 hover:underline flex items-center gap-0.5">
+              <span>View Table</span>
+              <ChevronRight className="w-3 h-3" />
+            </span>
+          </div>
         </div>
 
         {/* 6. Completed Submissions */}
@@ -732,8 +736,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <p className="text-xs text-gray-500">Filtered clients requiring urgent check-in, overdue follow-up, or high-risk outreach</p>
             </div>
             <button
-              onClick={() => onNavigateTab('clients')}
-              className="text-xs font-bold text-red-600 hover:text-red-700 flex items-center gap-1"
+              onClick={() => onNavigateTab('clients', 'Overdue')}
+              className="text-xs font-bold text-red-600 hover:text-red-700 flex items-center gap-1 cursor-pointer"
             >
               <span>View Table</span>
               <ChevronRight className="w-3.5 h-3.5" />

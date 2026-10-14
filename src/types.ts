@@ -207,6 +207,8 @@ export interface NotificationLog {
   counsellorName?: string;
   title?: string;
   isRead?: boolean;
+  readAt?: string;
+  readBy?: string[];
   subject?: string;
   messageBody: string;
   triggerType: 'Assessment Ready' | 'Reminder 24h' | 'Reminder 3d' | 'Overdue Alert' | 'Welcome' | 'Assessment Due' | string;

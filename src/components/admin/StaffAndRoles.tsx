@@ -52,11 +52,19 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
   const [emailSyncError, setEmailSyncError] = useState<string | null>(null);
   const [selfCurrentPassword, setSelfCurrentPassword] = useState('');
 
-  // Steven Benjamin manual sync state
-  const [showStevenModal, setShowStevenModal] = useState(false);
-  const [stevenUidInput, setStevenUidInput] = useState('');
-  const [isSyncingSteven, setIsSyncingSteven] = useState(false);
-  const [stevenError, setStevenError] = useState<string | null>(null);
+  // Generic Firebase Auth UID linking state
+  const [linkingStaffUser, setLinkingStaffUser] = useState<StaffUser | null>(null);
+  const [linkUidInput, setLinkUidInput] = useState('');
+  const [isLinkingStaff, setIsLinkingStaff] = useState(false);
+  const [linkStaffError, setLinkStaffError] = useState<string | null>(null);
+
+  // Duplicate resolution state
+  const [duplicateCandidate, setDuplicateCandidate] = useState<StaffUser | null>(null);
+  const [canonicalCandidate, setCanonicalCandidate] = useState<StaffUser | null>(null);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+  const [duplicateConfirmText, setDuplicateConfirmText] = useState('');
+  const [isResolvingDuplicate, setIsResolvingDuplicate] = useState(false);
+  const [duplicateResolutionError, setDuplicateResolutionError] = useState<string | null>(null);
 
   // Manual Firebase Console Guide state
   const [showConsoleGuide, setShowConsoleGuide] = useState(false);
@@ -288,36 +296,87 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
     }
   };
 
-  const handleSyncStevenBenjamin = async (e: React.FormEvent) => {
+  const handleLinkStaffAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    setStevenError(null);
+    setLinkStaffError(null);
+    if (!linkingStaffUser) return;
 
-    const cleanUid = stevenUidInput.trim();
+    const cleanUid = linkUidInput.trim();
     if (!cleanUid || cleanUid.length < 5) {
-      setStevenError('Please enter a valid Firebase Authentication UID copied from the Firebase Console.');
+      setLinkStaffError('Please enter a valid Firebase Authentication UID copied from the Firebase Console.');
       return;
     }
 
-    setIsSyncingSteven(true);
+    setIsLinkingStaff(true);
     try {
-      const res = await dataService.syncStevenBenjamin(cleanUid);
+      const res = await dataService.linkStaffAuthAccount({
+        staffId: linkingStaffUser.id,
+        authUid: cleanUid,
+      });
+
       if (!res.success) {
-        setStevenError(res.error || 'Failed to link Steven Benjamin in Firestore.');
-        setIsSyncingSteven(false);
+        setLinkStaffError(res.error || 'Failed to link staff member in Firestore.');
+        setIsLinkingStaff(false);
         return;
       }
 
-      setShowStevenModal(false);
-      setStevenUidInput('');
+      setLinkingStaffUser(null);
+      setLinkUidInput('');
       setActionFeedback({
         type: 'success',
-        message: `Steven Benjamin registered successfully as Super Admin with Firebase UID: ${cleanUid}.`,
+        message: `Account for ${linkingStaffUser.name} (${linkingStaffUser.role}) linked successfully with Firebase UID: ${cleanUid}.`,
       });
       setTimeout(() => setActionFeedback(null), 7000);
     } catch (err: any) {
-      setStevenError(err?.message || 'Error synchronizing Steven Benjamin.');
+      setLinkStaffError(err?.message || 'Error linking Firebase Authentication account.');
     } finally {
-      setIsSyncingSteven(false);
+      setIsLinkingStaff(false);
+    }
+  };
+
+  const handleOpenDuplicateModal = (candidate: StaffUser) => {
+    setDuplicateCandidate(candidate);
+    // Find canonical counterpart: staff with same email or similar name having a valid authUid or oldest creation
+    const matches = staff.filter((s) => s.id !== candidate.id && s.email.toLowerCase() === candidate.email.toLowerCase());
+    const canonical = matches.find((s) => s.authUid && s.authUid !== s.id) || matches[0] || null;
+    setCanonicalCandidate(canonical);
+    setDuplicateConfirmText('');
+    setDuplicateResolutionError(null);
+    setShowDuplicateModal(true);
+  };
+
+  const handleExecuteDuplicateRemoval = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDuplicateResolutionError(null);
+    if (!duplicateCandidate || !canonicalCandidate) return;
+
+    setIsResolvingDuplicate(true);
+    try {
+      const res = await dataService.removeDuplicateStaffRecord({
+        duplicateStaffId: duplicateCandidate.id,
+        canonicalStaffId: canonicalCandidate.id,
+        confirmationText: duplicateConfirmText,
+      });
+
+      if (!res.success) {
+        setDuplicateResolutionError(res.error || 'Failed to remove duplicate staff record.');
+        setIsResolvingDuplicate(false);
+        return;
+      }
+
+      setShowDuplicateModal(false);
+      setDuplicateCandidate(null);
+      setCanonicalCandidate(null);
+      setDuplicateConfirmText('');
+      setActionFeedback({
+        type: 'success',
+        message: res.message || 'Duplicate staff record removed successfully.',
+      });
+      setTimeout(() => setActionFeedback(null), 8000);
+    } catch (err: any) {
+      setDuplicateResolutionError(err?.message || 'Error removing duplicate staff record.');
+    } finally {
+      setIsResolvingDuplicate(false);
     }
   };
 
@@ -364,15 +423,16 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               onClick={() => {
-                setStevenUidInput('');
-                setStevenError(null);
-                setShowStevenModal(true);
+                const unlinked = staff.find((s) => !s.authUid || s.authUid === s.id) || staff[0];
+                setLinkingStaffUser(unlinked || null);
+                setLinkUidInput(unlinked?.authUid || '');
+                setLinkStaffError(null);
               }}
               className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-800 bg-gray-100 hover:bg-gray-200 border border-gray-300 px-3.5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs"
-              title="Link or synchronize Steven Benjamin using his Firebase Auth UID"
+              title="Link or synchronize any staff member using their Firebase Auth UID"
             >
               <ShieldCheck className="w-4 h-4 text-red-600" />
-              <span>Setup / Sync Steven Benjamin</span>
+              <span>Link Firebase UID</span>
             </button>
             <button
               onClick={() => {
@@ -472,32 +532,69 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         </div>
       )}
 
-      {/* Pending Steven Benjamin Setup Banner for Super Admins */}
-      {currentUser.role === 'Super Admin' &&
-        !staff.some(
-          (s) => s.email?.toLowerCase() === 'stevobenjo@gmail.com' && s.authUid && s.authUid.length > 5
-        ) && (
-          <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5 text-amber-900">
-              <ShieldCheck className="w-5 h-5 text-amber-600 shrink-0" />
+      {/* Duplicate Staff Detection Banner for Super Admins */}
+      {currentUser.role === 'Super Admin' && (() => {
+        const emailCounts = new Map<string, StaffUser[]>();
+        staff.forEach((s) => {
+          const em = s.email?.toLowerCase().trim();
+          if (em) {
+            const list = emailCounts.get(em) || [];
+            list.push(s);
+            emailCounts.set(em, list);
+          }
+        });
+        const duplicateGroups = Array.from(emailCounts.entries()).filter(([_, list]) => list.length > 1);
+        if (duplicateGroups.length === 0) return null;
+
+        return (
+          <div className="p-4 rounded-2xl bg-red-50 border border-red-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-red-950">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
               <div>
-                <span className="font-bold">Super Admin Profile Pending Link:</span> Steven Benjamin (
-                <span className="font-mono text-[11px]">stevobenjo@gmail.com</span>) requires linking with his Firebase
-                Authentication UID.
+                <span className="font-bold">Duplicate Staff Entry Detected:</span> Found multiple records registered with email <span className="font-mono text-[11px] font-semibold">{duplicateGroups[0][0]}</span> ({duplicateGroups[0][1].length} entries).
+                <p className="text-[11px] text-red-800 mt-0.5">Safely resolve duplicates to retain one legitimate account and eliminate orphaned records without losing clinical assignments.</p>
               </div>
             </div>
             <button
               onClick={() => {
-                setStevenUidInput('');
-                setStevenError(null);
-                setShowStevenModal(true);
+                const group = duplicateGroups[0][1];
+                // Determine duplicate: record with no real authUid or created later
+                const dup = group.find((s) => !s.authUid || s.authUid === s.id) || group[1];
+                handleOpenDuplicateModal(dup);
               }}
-              className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shrink-0 cursor-pointer shadow-xs transition-colors"
+              className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shrink-0 cursor-pointer shadow-xs transition-colors"
             >
-              Complete UID Setup
+              Resolve Duplicate
             </button>
           </div>
-        )}
+        );
+      })()}
+
+      {/* Generic Staff Pending Link Banner for Super Admins */}
+      {currentUser.role === 'Super Admin' && (() => {
+        const unlinked = staff.filter((s) => !s.authUid || s.authUid === s.id);
+        if (unlinked.length === 0) return null;
+        return (
+          <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-amber-900">
+              <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+              <div>
+                <span className="font-bold">Staff Accounts Awaiting Firebase UID Link:</span> {unlinked.length} account(s) can be synchronized with their Firebase Authentication UID.
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setLinkingStaffUser(unlinked[0]);
+                setLinkUidInput('');
+                setLinkStaffError(null);
+              }}
+              className="px-3 py-1 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shrink-0 cursor-pointer transition-colors"
+            >
+              Link UID ({unlinked[0].name})
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Staff Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -612,24 +709,51 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                     </div>
 
                     {currentUser.role === 'Super Admin' && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenChangeEmail(member)}
-                          className="flex-1 py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 hover:text-gray-950 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                          title="Change or synchronize this staff member's email address"
-                        >
-                          <Mail className="w-3.5 h-3.5 text-gray-500" />
-                          <span>Change Email</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSendPasswordReset(member)}
-                          className="flex-1 py-1.5 px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                        >
-                          <KeyRound className="w-3 h-3 text-gray-400" />
-                          <span>Reset Password</span>
-                        </button>
+                      <div className="space-y-1.5 pt-1 border-t border-gray-100">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenChangeEmail(member)}
+                            className="flex-1 py-1.5 px-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 hover:text-gray-950 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1"
+                            title="Change or synchronize this staff member's email address"
+                          >
+                            <Mail className="w-3.5 h-3.5 text-gray-500" />
+                            <span>Change Email</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLinkingStaffUser(member);
+                              setLinkUidInput(member.authUid || '');
+                              setLinkStaffError(null);
+                            }}
+                            className="flex-1 py-1.5 px-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 hover:text-gray-950 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1"
+                            title="Link or synchronize Firebase Authentication UID"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5 text-gray-500" />
+                            <span>Link UID</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSendPasswordReset(member)}
+                            className="py-1.5 px-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 font-semibold text-[11px] transition-all cursor-pointer flex items-center justify-center"
+                            title="Send Password Reset Email"
+                          >
+                            <KeyRound className="w-3 h-3 text-gray-400" />
+                          </button>
+                        </div>
+
+                        {staff.some((s) => s.id !== member.id && s.email.toLowerCase() === member.email.toLowerCase()) && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDuplicateModal(member)}
+                            className="w-full py-1.5 px-3 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                            title="Safely remove accidental duplicate counsellor or staff account"
+                          >
+                            <UserX className="w-3.5 h-3.5 text-red-600" />
+                            <span>Resolve Duplicate Record</span>
+                          </button>
+                        )}
                       </div>
                     )}
                   </>
@@ -762,22 +886,22 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                 </div>
               </div>
 
-              {/* Procedure B: Provisioning Steven Benjamin */}
+              {/* Procedure B: Generic Staff & Super Admin Provisioning */}
               <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 space-y-2">
                 <div className="font-bold text-gray-950 flex items-center gap-1.5 text-xs">
                   <ShieldCheck className="w-4 h-4 text-red-600" />
-                  <span>Procedure 2: Setting Up Steven Benjamin</span>
+                  <span>Procedure 2: Generic Staff & Super Admin Provisioning and UID Linking</span>
                 </div>
                 <ol className="list-decimal list-inside space-y-1 text-gray-600 text-[11px]">
                   <li>Open Firebase Console → <strong className="font-mono text-red-700">gamblepause-africa</strong>.</li>
                   <li>Go to <strong>Authentication</strong> → <strong>Users</strong>.</li>
-                  <li>If the account does not exist, click <strong>Add user</strong>, enter <span className="font-mono text-gray-800">stevobenjo@gmail.com</span> and set a temporary password.</li>
-                  <li>Copy the generated <strong>User UID</strong> for Steven Benjamin.</li>
-                  <li>In GamblePause, click <strong>Setup / Sync Steven Benjamin</strong> above.</li>
-                  <li>Paste Steven's Firebase UID and click <strong>Register / Synchronize Super Admin Profile</strong>.</li>
+                  <li>If creating a new staff account manually, click <strong>Add user</strong>, enter the official email and set a temporary password.</li>
+                  <li>Copy the generated <strong>User UID</strong> from Firebase Authentication.</li>
+                  <li>In GamblePause, click <strong>Link UID</strong> on the staff card.</li>
+                  <li>Paste the Firebase UID and click <strong>Link & Synchronize Staff Profile</strong>.</li>
                 </ol>
                 <div className="text-[10px] text-gray-500 italic pt-1 border-t border-gray-200">
-                  Security note: The Firestore profile is created at <span className="font-mono">users/{'{uid}'}</span> with role <span className="font-semibold">Super Admin</span>. No passwords or secrets are stored in Firestore.
+                  Security note: The Firestore profile is maintained at <span className="font-mono">users/{'{uid}'}</span> and <span className="font-mono">staff/{'{id}'}</span>. No passwords or credentials are ever stored in Firestore.
                 </div>
               </div>
             </div>
@@ -1250,8 +1374,8 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
         );
       })()}
 
-      {/* Steven Benjamin Setup / Synchronize Modal */}
-      {showStevenModal && (
+      {/* Generic Firebase UID Linking Modal */}
+      {linkingStaffUser && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-lg w-full space-y-4 my-8">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
@@ -1261,53 +1385,53 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-gray-950">
-                    Setup / Synchronize Steven Benjamin (Super Admin)
+                    Link Firebase Authentication UID
                   </h3>
                   <p className="text-[11px] text-gray-500">
-                    Authoritative profile linkage with Firebase Authentication UID
+                    Synchronize {linkingStaffUser.name}'s profile with their authoritative Firebase Auth record
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setShowStevenModal(false)}
+                onClick={() => setLinkingStaffUser(null)}
                 className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer p-1"
               >
                 ✕
               </button>
             </div>
 
-            {stevenError && (
+            {linkStaffError && (
               <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                <span>{stevenError}</span>
+                <span>{linkStaffError}</span>
               </div>
             )}
 
             <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-2 text-xs text-gray-800">
-              <div className="font-bold text-gray-900">Account Specifications:</div>
+              <div className="font-bold text-gray-900">Target Staff Member:</div>
               <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div>Name: <strong>Steven Benjamin</strong></div>
-                <div>Role: <strong>Super Admin</strong></div>
-                <div>Email: <strong className="font-mono">stevobenjo@gmail.com</strong></div>
-                <div>Target Doc: <strong className="font-mono">users/{'{FirebaseUID}'}</strong></div>
+                <div>Name: <strong>{linkingStaffUser.name}</strong></div>
+                <div>Role: <strong>{linkingStaffUser.role}</strong></div>
+                <div>Email: <strong className="font-mono">{linkingStaffUser.email}</strong></div>
+                <div>Internal ID: <strong className="font-mono text-[10px]">{linkingStaffUser.id}</strong></div>
               </div>
             </div>
 
             <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs space-y-1.5 text-amber-950">
               <div className="font-bold text-amber-900 flex items-center gap-1.5">
                 <Info className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Firebase Console Procedure (Requirement 22):</span>
+                <span>Firebase Authentication Link Instructions:</span>
               </div>
               <ol className="list-decimal list-inside text-[11px] space-y-0.5 text-gray-700">
-                <li>Open Firebase Console (<span className="font-mono text-red-700">gamblepause-africa</span>).</li>
+                <li>Open the Firebase Console (<span className="font-mono text-red-700">gamblepause-africa</span>).</li>
                 <li>Go to <span className="font-semibold">Authentication</span> → <span className="font-semibold">Users</span>.</li>
-                <li>If not created, click <span className="font-semibold">Add user</span> with email <span className="font-mono font-semibold">stevobenjo@gmail.com</span> and a temporary password.</li>
-                <li>Copy the generated <span className="font-semibold">User UID</span> for Steven Benjamin.</li>
-                <li>Paste the UID below and click Register / Synchronize.</li>
+                <li>Find or create the account for <span className="font-mono font-semibold">{linkingStaffUser.email}</span>.</li>
+                <li>Copy the generated <span className="font-semibold">User UID</span>.</li>
+                <li>Paste the UID below and click Link Profile.</li>
               </ol>
             </div>
 
-            <form onSubmit={handleSyncStevenBenjamin} className="space-y-3.5 text-xs">
+            <form onSubmit={handleLinkStaffAccount} className="space-y-3.5 text-xs">
               <div>
                 <label className="block font-bold text-gray-800 mb-1">
                   Firebase Authentication UID <span className="text-red-500">*</span>
@@ -1315,30 +1439,160 @@ export const StaffAndRoles: React.FC<StaffAndRolesProps> = ({ currentUser }) => 
                 <input
                   type="text"
                   required
-                  placeholder="Paste Firebase Auth UID (e.g. 5xX8jK9...)"
-                  value={stevenUidInput}
-                  onChange={(e) => setStevenUidInput(e.target.value)}
+                  placeholder="Paste Firebase Auth UID (e.g. Ba9N30y4cHVF79Ee78LMZFc8kAB2)"
+                  value={linkUidInput}
+                  onChange={(e) => setLinkUidInput(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 font-mono text-xs"
                 />
                 <p className="text-[10px] text-gray-500 mt-1">
-                  The document ID in <span className="font-mono">users</span> will match this exact UID. No fake credentials or passwords are created.
+                  Links this staff profile to their authentic Firebase Authentication account without creating dummy credentials.
                 </p>
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
                 <button
                   type="button"
-                  onClick={() => setShowStevenModal(false)}
+                  onClick={() => setLinkingStaffUser(null)}
                   className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={isSyncingSteven || !stevenUidInput.trim()}
+                  disabled={isLinkingStaff || !linkUidInput.trim()}
                   className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
                 >
-                  {isSyncingSteven ? 'Registering...' : 'Register / Synchronize Super Admin Profile'}
+                  {isLinkingStaff ? 'Linking...' : 'Link & Synchronize Profile'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Super Admin Duplicate Staff Resolution Modal */}
+      {showDuplicateModal && duplicateCandidate && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-2xl max-w-xl w-full space-y-4 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center border border-red-200 shrink-0">
+                  <UserX className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-950">
+                    Safely Resolve Duplicate Staff Record
+                  </h3>
+                  <p className="text-[11px] text-gray-500">
+                    Super Admin reconciliation and non-destructive cleanup
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowDuplicateModal(false);
+                  setDuplicateCandidate(null);
+                  setCanonicalCandidate(null);
+                }}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {duplicateResolutionError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{duplicateResolutionError}</span>
+              </div>
+            )}
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+              <span className="font-bold">Clinical & Identity Safety Guarantee:</span>
+              <p className="text-[11px]">
+                The canonical counsellor's legitimate staff profile, Firebase Auth account, client assignments, case notes, notifications, and audit logs will be 100% retained and protected.
+              </p>
+            </div>
+
+            {/* Record Comparison Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              {/* Duplicate to Remove */}
+              <div className="p-3.5 bg-red-50/60 border border-red-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between border-b border-red-200/80 pb-1.5">
+                  <span className="font-bold text-red-900 uppercase text-[10px] tracking-wider">Duplicate (To Remove)</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800">Redundant</span>
+                </div>
+                <div className="space-y-1 text-[11px]">
+                  <div>Name: <strong>{duplicateCandidate.name}</strong></div>
+                  <div>Email: <strong className="font-mono text-[10px]">{duplicateCandidate.email}</strong></div>
+                  <div>Internal ID: <strong className="font-mono text-[10px] text-red-700">{duplicateCandidate.id}</strong></div>
+                  <div>Role: <strong>{duplicateCandidate.role}</strong></div>
+                  <div>Status: <span className="font-semibold">{duplicateCandidate.status || (duplicateCandidate.active ? 'Active' : 'Inactive')}</span></div>
+                  <div>Caseload: <strong>{duplicateCandidate.assignedClientsCount || 0} clients</strong></div>
+                  <div>Auth UID: <span className="font-mono text-[10px] text-gray-600">{duplicateCandidate.authUid || 'None (No real user)'}</span></div>
+                </div>
+              </div>
+
+              {/* Canonical to Retain */}
+              <div className="p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between border-b border-emerald-200/80 pb-1.5">
+                  <span className="font-bold text-emerald-900 uppercase text-[10px] tracking-wider">Canonical (To Retain)</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-200 text-emerald-800">Retained</span>
+                </div>
+                {canonicalCandidate ? (
+                  <div className="space-y-1 text-[11px]">
+                    <div>Name: <strong>{canonicalCandidate.name}</strong></div>
+                    <div>Email: <strong className="font-mono text-[10px]">{canonicalCandidate.email}</strong></div>
+                    <div>Internal ID: <strong className="font-mono text-[10px] text-emerald-800">{canonicalCandidate.id}</strong></div>
+                    <div>Role: <strong>{canonicalCandidate.role}</strong></div>
+                    <div>Status: <span className="font-semibold text-emerald-700">{canonicalCandidate.status || (canonicalCandidate.active ? 'Active' : 'Inactive')}</span></div>
+                    <div>Caseload: <strong>{canonicalCandidate.assignedClientsCount || 0} clients</strong></div>
+                    <div>Auth UID: <span className="font-mono text-[10px] text-emerald-700 font-bold">{canonicalCandidate.authUid || 'Configured'}</span></div>
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-xs italic">Select or verify canonical record.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Confirmation form */}
+            <form onSubmit={handleExecuteDuplicateRemoval} className="space-y-3.5 text-xs pt-1 border-t border-gray-100">
+              <div>
+                <label className="block font-bold text-gray-800 mb-1">
+                  Type <span className="font-mono text-red-600 bg-red-50 px-1 py-0.5 rounded font-bold">{duplicateCandidate.id}</span> or <span className="font-mono text-red-600 bg-red-50 px-1 py-0.5 rounded font-bold">DELETE DUPLICATE</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder={`Enter ${duplicateCandidate.id} or DELETE DUPLICATE`}
+                  value={duplicateConfirmText}
+                  onChange={(e) => setDuplicateConfirmText(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 font-mono text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDuplicateModal(false);
+                    setDuplicateCandidate(null);
+                    setCanonicalCandidate(null);
+                  }}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isResolvingDuplicate ||
+                    (duplicateConfirmText.trim().toLowerCase() !== duplicateCandidate.id.toLowerCase() &&
+                      duplicateConfirmText.trim().toLowerCase() !== 'delete duplicate')
+                  }
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {isResolvingDuplicate ? 'Removing Duplicate...' : 'Permanently Remove Duplicate Record'}
                 </button>
               </div>
             </form>

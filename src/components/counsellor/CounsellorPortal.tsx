@@ -29,7 +29,14 @@ import {
   Download,
 } from 'lucide-react';
 import { Client, CaseNote, AssessmentSubmission, FormDefinition, NotificationLog } from '../../types';
-import { dataService, isClientActiveInPathway, isHistoricalMigratedClient } from '../../services/dataService';
+import {
+  dataService,
+  isClientActiveInPathway,
+  isHistoricalMigratedClient,
+  isClientUpcomingDue,
+  isClientOverdue,
+  matchClientSearch,
+} from '../../services/dataService';
 import { AuthUser } from '../../services/authService';
 import { GamblePauseLogo } from '../common/GamblePauseLogo';
 import { createWhatsAppDirectUrl, generateWhatsAppMessage } from '../../services/whatsappService';
@@ -111,7 +118,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
     };
   }, [user.id, user.name]);
 
-  const unreadCount = notifications.filter((n) => !n.isRead).length;
+  const unreadCount = notifications.filter((n) => !dataService.isNotificationRead(n, user.id)).length;
 
   // Dynamically extract available countries from counsellor's authorized caseload
   const availableCountries = useMemo(() => {
@@ -204,19 +211,9 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
         if (dateRange === '90d' && days > 90) return false;
       }
 
-      // 7. Search query filter (AND logic)
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesId = c.id.toLowerCase().includes(q);
-        const matchesName = `${c.firstName} ${c.lastName}`.toLowerCase().includes(q);
-        const matchesPhone = c.phone?.includes(q);
-        const matchesLocation =
-          (c.location && c.location.toLowerCase().includes(q)) ||
-          (c.state && c.state.toLowerCase().includes(q)) ||
-          (c.country && c.country.toLowerCase().includes(q));
-        if (!matchesId && !matchesName && !matchesPhone && !matchesLocation) {
-          return false;
-        }
+      // 7. Search query filter (crash-proof)
+      if (searchQuery.trim() && !matchClientSearch(c, searchQuery)) {
+        return false;
       }
 
       return true;
@@ -369,9 +366,14 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
     }
   };
 
-  const handleMarkAsRead = (id: string, e?: React.MouseEvent) => {
+  const handleMarkAsRead = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    dataService.markNotificationAsRead(id);
+    await dataService.markNotificationAsRead(id);
+    setNotifications(dataService.getCounsellorNotifications(user.id, user.name));
+  };
+
+  const handleMarkAllAsRead = async () => {
+    await dataService.markAllNotificationsAsRead(user.id);
     setNotifications(dataService.getCounsellorNotifications(user.id, user.name));
   };
 
@@ -382,13 +384,15 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
     const d = new Date(c.nextAssessmentDueDate);
     return d.toDateString() === new Date().toDateString() || c.status === 'Assessment Due';
   });
-  const overdueClients = filteredCaseload.filter((c) => {
-    if (c.status === 'Overdue') return true;
-    if (!c.nextAssessmentDueDate || c.status === 'Completed' || c.status === 'Closed') return false;
-    return new Date(c.nextAssessmentDueDate).getTime() < new Date().getTime();
-  });
+  const overdueClients = filteredCaseload.filter((c) => isClientOverdue(c));
+  const upcomingClients = filteredCaseload.filter((c) => isClientUpcomingDue(c));
 
-  const filteredClients = filteredCaseload;
+  const filteredClients =
+    activeTab === 'overdue'
+      ? overdueClients
+      : activeTab === 'upcoming'
+      ? upcomingClients
+      : filteredCaseload;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col justify-between font-sans">
@@ -399,7 +403,9 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
             <GamblePauseLogo size="sm" alt="GamblePause Logo" />
             <div className="text-xs text-gray-600 font-medium leading-tight">
               <span className="font-bold text-gray-950 block">{user.name}</span>
-              <span className="text-red-600 font-semibold text-[11px]">Caseload: {totalCaseload} clients</span>
+              <span className="text-red-600 font-semibold text-[11px]">
+                Caseload: {dataService.isAuthoritativeLoaded() ? `${totalCaseload} clients` : 'Loading...'}
+              </span>
             </div>
           </div>
 
@@ -479,7 +485,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
             }`}
           >
             <Clock className="w-4 h-4" />
-            <span>Upcoming Due ({dueToday.length})</span>
+            <span>Upcoming Due ({upcomingClients.length})</span>
           </button>
 
           <button
@@ -814,8 +820,19 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                     Instant alerts for newly assigned or reassigned clients in your caseload.
                   </p>
                 </div>
-                <div className="text-xs font-bold text-gray-600">
-                  {unreadCount} unread
+                <div className="flex items-center gap-3">
+                  <div className="text-xs font-bold text-gray-600">
+                    {unreadCount} unread
+                  </div>
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleMarkAllAsRead}
+                      className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Mark All as Read
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -830,12 +847,13 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                   {notifications.map((notif) => {
                     const isNewAssigned = notif.subject?.includes('New Client Assigned');
                     const isReassigned = notif.subject?.includes('Reassigned');
+                    const isRead = dataService.isNotificationRead(notif, user.id);
 
                     return (
                       <div
                         key={notif.id}
                         className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                          notif.isRead
+                          isRead
                             ? 'bg-gray-50 border-gray-200 opacity-80'
                             : 'bg-red-50/50 border-red-200 shadow-xs'
                         }`}
@@ -855,7 +873,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                               <span className="font-black text-sm text-gray-950">
                                 {notif.subject || 'Client Assignment'}
                               </span>
-                              {!notif.isRead && (
+                              {!isRead && (
                                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-600 text-white">
                                   New
                                 </span>
@@ -873,10 +891,10 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                         <div className="flex items-center gap-2 self-end sm:self-center">
                           {notif.clientId && (
                             <button
-                              onClick={() => {
+                              onClick={async () => {
                                 const cl = dataService.getClientById(notif.clientId);
                                 if (cl) {
-                                  handleMarkAsRead(notif.id);
+                                  await handleMarkAsRead(notif.id);
                                   handleSelectClient(cl);
                                 }
                               }}
@@ -885,7 +903,7 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                               Open Case
                             </button>
                           )}
-                          {!notif.isRead && (
+                          {!isRead && (
                             <button
                               onClick={(e) => handleMarkAsRead(notif.id, e)}
                               className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-100 text-gray-600 border border-gray-200 text-xs font-bold transition-colors cursor-pointer"
@@ -1388,13 +1406,18 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                 <div>
                   <h2 className="text-lg font-black text-gray-950">
                     {activeTab === 'overdue'
-                      ? 'Overdue Caseload'
+                      ? `Overdue Caseload (${overdueClients.length})`
                       : activeTab === 'upcoming'
-                      ? 'Upcoming Check-ins'
-                      : 'My Assigned Clients'}
+                      ? `Upcoming Check-ins (${upcomingClients.length})`
+                      : `My Assigned Clients (${filteredCaseload.length})`}
                   </h2>
                   <p className="text-xs text-gray-500 font-medium">
-                    Showing clients assigned strictly to <strong className="text-gray-900">{user.name}</strong>.
+                    {activeTab === 'overdue'
+                      ? `Showing clients with past-due assessments assigned to `
+                      : activeTab === 'upcoming'
+                      ? `Showing clients with upcoming scheduled assessments assigned to `
+                      : `Showing clients assigned strictly to `}
+                    <strong className="text-gray-900">{user.name}</strong>.
                   </p>
                 </div>
 
@@ -1412,7 +1435,11 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
 
               {filteredClients.length === 0 ? (
                 <div className="p-8 text-center text-xs text-gray-500 bg-gray-50 rounded-xl border border-gray-200">
-                  No assigned clients found matching your filter or query.
+                  {activeTab === 'overdue'
+                    ? 'No overdue assessments in your caseload. All check-ins are up to date.'
+                    : activeTab === 'upcoming'
+                    ? 'No clients currently scheduled for upcoming assessments in this window.'
+                    : 'No assigned clients found matching your filter or query.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -1447,10 +1474,29 @@ export const CounsellorPortal: React.FC<CounsellorPortalProps> = ({ user, onLogo
                           <td className="py-3.5 px-3 text-gray-700 font-medium">
                             {client.currentStageName}
                           </td>
-                          <td className="py-3.5 px-3 text-gray-600">
-                            {client.nextAssessmentDueDate
-                              ? new Date(client.nextAssessmentDueDate).toLocaleDateString()
-                              : 'None'}
+                          <td className="py-3.5 px-3">
+                            {client.nextAssessmentDueDate ? (
+                              <div>
+                                <div className="font-medium text-gray-800">
+                                  {new Date(client.nextAssessmentDueDate).toLocaleDateString()}
+                                </div>
+                                {isClientOverdue(client) ? (
+                                  <span className="inline-block mt-0.5 text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.2 rounded border border-red-200">
+                                    Overdue
+                                  </span>
+                                ) : new Date(client.nextAssessmentDueDate).toDateString() === new Date().toDateString() ? (
+                                  <span className="inline-block mt-0.5 text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                                    Due Today
+                                  </span>
+                                ) : (
+                                  <span className="inline-block mt-0.5 text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
+                                    Scheduled Future
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400 italic">None</span>
+                            )}
                           </td>
                           <td className="py-3.5 px-3">
                             <span

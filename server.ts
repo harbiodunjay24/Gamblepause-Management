@@ -8,6 +8,7 @@ import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import sendCounsellorEmailHandler from './api/notifications/send-counsellor-email';
 import deleteAuthUserHandler from './api/admin/delete-auth-user';
+import removeDuplicateStaffHandler from './api/admin/remove-duplicate-staff';
 
 const app = express();
 const PORT = 3000;
@@ -1186,6 +1187,17 @@ app.all('/api/send-email', (req, res) => {
 // Admin User Deletion
 app.all('/api/admin/delete-auth-user', (req, res) => {
   return deleteAuthUserHandler(req, res);
+});
+
+// Admin Duplicate Staff Removal
+app.all('/api/admin/remove-duplicate-staff', async (req, res) => {
+  const { duplicateStaffId, canonicalStaffId } = req.body || {};
+  if (duplicateStaffId && req.method === 'POST') {
+    db.staff = db.staff.filter((s) => s.id !== duplicateStaffId);
+    saveDatabase();
+    broadcastEvent('STAFF_DELETED', { staffId: duplicateStaffId, canonicalStaffId });
+  }
+  return removeDuplicateStaffHandler(req, res);
 });
 
 // ---------------------------------------------------------

@@ -107,18 +107,22 @@ class AuthService {
           ];
 
           // Retain currently authenticated role while resolving Firestore to prevent premature demotion / session kicks
-          let role: AuthUser['role'] = (this.currentUser?.id === fbUser.uid ? this.currentUser.role : undefined) || 'Client';
+          let role: AuthUser['role'] | undefined = this.currentUser?.id === fbUser.uid ? this.currentUser.role : undefined;
 
           if (superAdminBootstrapEmails.includes(cleanEmail)) {
             role = 'Super Admin';
-          } else if (
-            cleanEmail === 'benjamin@gamblepause.org' ||
-            cleanEmail === 'micheal.akinniku@gamblepause.org' ||
-            cleanEmail === 'celia.badmus@gamblepause.org'
-          ) {
-            role = 'Counsellor';
-          } else if (cleanEmail.endsWith('@gamblepause.org')) {
-            role = 'Staff';
+          } else if (!role) {
+            if (
+              cleanEmail === 'benjamin@gamblepause.org' ||
+              cleanEmail === 'micheal.akinniku@gamblepause.org' ||
+              cleanEmail === 'celia.badmus@gamblepause.org'
+            ) {
+              role = 'Counsellor';
+            } else if (cleanEmail.endsWith('@gamblepause.org')) {
+              role = 'Staff';
+            } else {
+              role = 'Client';
+            }
           }
 
           let clientId: string | undefined = this.currentUser?.clientId;
@@ -197,7 +201,7 @@ class AuthService {
             id: fbUser.uid,
             name: displayName,
             email: fbUser.email || '',
-            role: role,
+            role: role || 'Client',
             clientId: clientId,
             username: fbUser.email?.split('@')[0],
           };
@@ -280,7 +284,7 @@ class AuthService {
   }
 
   public isCounsellor(): boolean {
-    return this.currentUser?.role === 'Counsellor' || this.currentUser?.role === 'Super Admin';
+    return this.currentUser?.role === 'Counsellor';
   }
 
   public isStaff(): boolean {

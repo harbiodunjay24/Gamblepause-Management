@@ -17,26 +17,40 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { Client, ClientStatus, StaffUser } from '../../types';
-import { dataService } from '../../services/dataService';
+import {
+  dataService,
+  matchClientSearch,
+  isClientUpcomingDue,
+  isClientOverdue,
+  isClientActiveInPathway,
+} from '../../services/dataService';
 import { NIGERIAN_STATES } from '../../data/demoData';
 
 interface ClientListProps {
   currentUser: StaffUser;
   onSelectClient: (client: Client) => void;
   onNewClientClick: () => void;
+  initialFilter?: string;
 }
 
 export const ClientList: React.FC<ClientListProps> = ({
   currentUser,
   onSelectClient,
   onNewClientClick,
+  initialFilter,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>(initialFilter || 'all');
   const [counsellorFilter, setCounsellorFilter] = useState<string>('all');
   const [countryFilter, setCountryFilter] = useState<string>('all');
   const [stateFilter, setStateFilter] = useState<string>('all');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialFilter) {
+      setStatusFilter(initialFilter);
+    }
+  }, [initialFilter]);
 
   // Subscribe to dataService updates (e.g. real-time Firestore sync across devices)
   const [, setTick] = useState(0);
@@ -92,27 +106,25 @@ export const ClientList: React.FC<ClientListProps> = ({
     });
   }, [clients, countryFilter]);
 
+  const upcomingCount = useMemo(() => clients.filter((c) => isClientUpcomingDue(c)).length, [clients]);
+  const overdueCount = useMemo(() => clients.filter((c) => isClientOverdue(c)).length, [clients]);
+  const activeCount = useMemo(() => clients.filter((c) => isClientActiveInPathway(c)).length, [clients]);
+
   const filteredClients = useMemo(() => {
     return clients.filter((c) => {
-      // Search matching: ID, name, email, phone, location, country
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesId = c.id.toLowerCase().includes(q);
-        const matchesName = `${c.firstName} ${c.lastName}`.toLowerCase().includes(q);
-        const matchesEmail = c.email.toLowerCase().includes(q);
-        const matchesPhone = c.phone.replace(/[^0-9]/g, '').includes(q.replace(/[^0-9]/g, ''));
-        const matchesLocation =
-          (c.location && c.location.toLowerCase().includes(q)) ||
-          (c.state && c.state.toLowerCase().includes(q)) ||
-          (c.country && c.country.toLowerCase().includes(q));
-
-        if (!matchesId && !matchesName && !matchesEmail && !matchesPhone && !matchesLocation) {
-          return false;
-        }
+      // Crash-proof search matching: ID, name, email, phone, location, country, counsellor
+      if (searchQuery.trim() && !matchClientSearch(c, searchQuery)) {
+        return false;
       }
 
-      // Filter by status (AND logic)
-      if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+      // Filter by status / upcoming / overdue (AND logic)
+      if (statusFilter === 'Upcoming Due') {
+        if (!isClientUpcomingDue(c)) return false;
+      } else if (statusFilter === 'Overdue') {
+        if (!isClientOverdue(c)) return false;
+      } else if (statusFilter !== 'all' && c.status !== statusFilter) {
+        return false;
+      }
 
       // Filter by counsellor (AND logic)
       if (counsellorFilter !== 'all' && c.assignedCounsellorId !== counsellorFilter) return false;
@@ -120,13 +132,13 @@ export const ClientList: React.FC<ClientListProps> = ({
       // Filter by country (AND logic)
       if (countryFilter !== 'all') {
         const cCountry = c.country || (NIGERIAN_STATES.includes(c.state) ? 'Nigeria' : 'Not specified');
-        if (cCountry.toLowerCase() !== countryFilter.toLowerCase()) return false;
+        if ((cCountry || '').toLowerCase() !== countryFilter.toLowerCase()) return false;
       }
 
       // Filter by state (AND logic)
       if (stateFilter !== 'all') {
         const cState = c.state || 'Not specified';
-        if (cState.toLowerCase() !== stateFilter.toLowerCase()) return false;
+        if ((cState || '').toLowerCase() !== stateFilter.toLowerCase()) return false;
       }
 
       return true;
@@ -172,6 +184,20 @@ export const ClientList: React.FC<ClientListProps> = ({
     }
   };
 
+  if (!isLoaded) {
+    return (
+      <div className="space-y-6">
+        <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm flex items-center justify-center py-24">
+          <div className="text-center space-y-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div>
+            <p className="text-sm font-semibold text-gray-700">Loading authoritative client records...</p>
+            <p className="text-xs text-gray-400">Connecting to Cloud Firestore...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Top action header */}
@@ -209,6 +235,54 @@ export const ClientList: React.FC<ClientListProps> = ({
           />
         </div>
 
+        {/* Quick Filter Status Tabs */}
+        <div className="flex flex-wrap items-center gap-2 pt-1 border-b border-gray-100 pb-3">
+          <button
+            type="button"
+            onClick={() => setStatusFilter('all')}
+            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+              statusFilter === 'all'
+                ? 'bg-gray-950 text-white shadow-xs'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            All Clients ({clients.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Upcoming Due')}
+            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+              statusFilter === 'Upcoming Due'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200'
+            }`}
+          >
+            Upcoming Due ({upcomingCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Overdue')}
+            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+              statusFilter === 'Overdue'
+                ? 'bg-red-600 text-white shadow-xs'
+                : 'bg-red-50 hover:bg-red-100 text-red-700 border border-red-200'
+            }`}
+          >
+            Overdue ({overdueCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Active')}
+            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+              statusFilter === 'Active'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200'
+            }`}
+          >
+            Active Pathway ({activeCount})
+          </button>
+        </div>
+
         {/* Filter chips */}
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
           <span className="text-gray-400 font-semibold flex items-center gap-1 mr-1">
@@ -222,9 +296,10 @@ export const ClientList: React.FC<ClientListProps> = ({
             className="px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 font-medium focus:outline-none focus:ring-1 focus:ring-red-500"
           >
             <option value="all">All Statuses ({clients.length})</option>
-            <option value="Active">Active</option>
+            <option value="Upcoming Due">Upcoming Due ({upcomingCount})</option>
+            <option value="Overdue">Overdue ({overdueCount})</option>
+            <option value="Active">Active ({activeCount})</option>
             <option value="Assessment Due">Assessment Due</option>
-            <option value="Overdue">Overdue</option>
             <option value="Completed">Completed</option>
             <option value="Awaiting Assessment">Awaiting Assessment</option>
           </select>
@@ -306,6 +381,21 @@ export const ClientList: React.FC<ClientListProps> = ({
             </div>
             <p className="text-sm font-bold text-gray-800">No clients match your filter criteria</p>
             <p className="text-xs text-gray-500 mt-1">Try clearing your search term or adjusting filters.</p>
+            {(searchQuery.trim() || statusFilter !== 'all' || counsellorFilter !== 'all' || countryFilter !== 'all' || stateFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setStatusFilter('all');
+                  setCounsellorFilter('all');
+                  setCountryFilter('all');
+                  setStateFilter('all');
+                }}
+                className="mt-3 px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs transition-colors cursor-pointer"
+              >
+                Clear Search & Reset Filters
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -324,8 +414,9 @@ export const ClientList: React.FC<ClientListProps> = ({
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredClients.map((client) => {
-                  const isDue = client.status === 'Assessment Due';
-                  const isOverdue = client.status === 'Overdue';
+                  const isDue = client.status === 'Assessment Due' || (Boolean(client.nextAssessmentDueDate) && new Date(client.nextAssessmentDueDate!).toDateString() === new Date().toDateString());
+                  const isOverdue = isClientOverdue(client);
+                  const isUpcoming = isClientUpcomingDue(client);
 
                   return (
                     <tr
@@ -398,17 +489,35 @@ export const ClientList: React.FC<ClientListProps> = ({
                         <div className="font-medium text-gray-800">
                           {client.nextAssessmentName || 'All Done'}
                         </div>
-                        {client.nextAssessmentDueDate && (
-                          <div
-                            className={`text-[11px] font-semibold ${
-                              isOverdue ? 'text-red-600' : isDue ? 'text-amber-600' : 'text-gray-400'
-                            }`}
-                          >
-                            {new Date(client.nextAssessmentDueDate).toLocaleDateString('en-GB', {
-                              day: 'numeric',
-                              month: 'short',
-                            })}
+                        {client.nextAssessmentDueDate ? (
+                          <div className="mt-0.5">
+                            <span
+                              className={`text-[11px] font-semibold ${
+                                isOverdue ? 'text-red-600' : isDue ? 'text-amber-600' : 'text-blue-600'
+                              }`}
+                            >
+                              {new Date(client.nextAssessmentDueDate).toLocaleDateString('en-GB', {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric',
+                              })}
+                            </span>
+                            {isOverdue ? (
+                              <span className="ml-1 text-[9px] font-bold text-red-700 bg-red-50 px-1.5 py-0.2 rounded border border-red-200">
+                                Overdue
+                              </span>
+                            ) : isDue ? (
+                              <span className="ml-1 text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                                Due Today
+                              </span>
+                            ) : isUpcoming ? (
+                              <span className="ml-1 text-[9px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
+                                Scheduled Future
+                              </span>
+                            ) : null}
                           </div>
+                        ) : (
+                          <div className="text-[11px] text-gray-400 italic">No due date</div>
                         )}
                       </td>
 

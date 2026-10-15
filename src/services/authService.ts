@@ -78,20 +78,24 @@ class AuthService {
     if (this.initialized) return;
 
     // Purge any stored staff passwords from localStorage to ensure Firebase Auth is sole source of truth
-    try {
-      localStorage.removeItem(STORAGE_KEYS.PASSWORDS);
-    } catch {
-      // Ignore
+    if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.PASSWORDS);
+      } catch {
+        // Ignore
+      }
     }
     this.credentials = {};
 
     // Load active session from sessionStorage (destroyed on tab close)
-    const storedSession = sessionStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
-    if (storedSession) {
-      try {
-        this.currentUser = JSON.parse(storedSession);
-      } catch {
-        this.currentUser = null;
+    if (typeof window !== 'undefined' && typeof sessionStorage !== 'undefined') {
+      const storedSession = sessionStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
+      if (storedSession) {
+        try {
+          this.currentUser = JSON.parse(storedSession);
+        } catch {
+          this.currentUser = null;
+        }
       }
     }
 
@@ -113,21 +117,17 @@ class AuthService {
             role = 'Super Admin';
           } else if (!role) {
             if (
-              cleanEmail === 'benjamin@gamblepause.org' ||
               cleanEmail === 'micheal.akinniku@gamblepause.org' ||
               cleanEmail === 'celia.badmus@gamblepause.org'
             ) {
               role = 'Counsellor';
             } else if (cleanEmail.endsWith('@gamblepause.org')) {
               role = 'Staff';
-            } else {
-              role = 'Client';
             }
           }
 
           let clientId: string | undefined = this.currentUser?.clientId;
           const canonicalCounsellorNames: Record<string, string> = {
-            'benjamin@gamblepause.org': 'Benjamin',
             'micheal.akinniku@gamblepause.org': 'Micheal Akinniku',
             'celia.badmus@gamblepause.org': 'Celia Badmus',
           };
@@ -152,7 +152,7 @@ class AuthService {
               }
 
               // Also check staff collection authoritatively by authUid or email
-              if (!isDeactivated && role !== 'Client') {
+              if (!isDeactivated) {
                 const qStaff = query(collection(db, 'staff'), where('email', '==', cleanEmail));
                 const sSnap = await getDocs(qStaff);
                 if (!sSnap.empty) {
@@ -163,6 +163,10 @@ class AuthService {
                     isDeactivated = true;
                   }
                 }
+              }
+
+              if (!role) {
+                role = 'Client';
               }
 
               // Look up client by authUid where client.authUid == fbUser.uid
@@ -287,6 +291,10 @@ class AuthService {
     return this.currentUser?.role === 'Counsellor';
   }
 
+  public isAnalyst(): boolean {
+    return this.currentUser?.role === 'Analyst' || this.currentUser?.role === 'Analyst / Viewer';
+  }
+
   public isStaff(): boolean {
     return (
       this.currentUser?.role === 'Staff' ||
@@ -390,11 +398,12 @@ class AuthService {
       'ayodeji': 'ayodejiharbiodun24@gmail.com',
       'ladipo.abiose': 'ladipo.abiose@gamblepause.org',
       'ladipo': 'ladipo.abiose@gamblepause.org',
-      'abiose': 'ladipo.abiose@gamblepause.org',
-      'benjamin': 'benjamin@gamblepause.org',
       'micheal.akinniku': 'micheal.akinniku@gamblepause.org',
       'micheal': 'micheal.akinniku@gamblepause.org',
       'celia.badmus': 'celia.badmus@gamblepause.org',
+      'celia': 'celia.badmus@gamblepause.org',
+      'biodun.analyst': 'harbiodunjay2027@gmail.com',
+      'analyst': 'harbiodunjay2027@gmail.com',
       'celia': 'celia.badmus@gamblepause.org',
     };
 
@@ -470,7 +479,6 @@ class AuthService {
       if (isSuperAdminEmail) {
         role = 'Super Admin';
       } else if (
-        cleanEmail === 'benjamin@gamblepause.org' ||
         cleanEmail === 'micheal.akinniku@gamblepause.org' ||
         cleanEmail === 'celia.badmus@gamblepause.org'
       ) {
@@ -481,7 +489,6 @@ class AuthService {
 
       let clientId: string | undefined = undefined;
       const canonicalCounsellorNames: Record<string, string> = {
-        'benjamin@gamblepause.org': 'Benjamin',
         'micheal.akinniku@gamblepause.org': 'Micheal Akinniku',
         'celia.badmus@gamblepause.org': 'Celia Badmus',
       };
@@ -528,7 +535,7 @@ class AuthService {
           }
 
           // Authoritative staff collection verification
-          if (!isDeactivated && role !== 'Client') {
+          if (!isDeactivated) {
             const qStaff = query(collection(db, 'staff'), where('email', '==', cleanEmail));
             const sSnap = await getDocs(qStaff);
             if (!sSnap.empty) {
@@ -578,7 +585,14 @@ class AuthService {
       }
 
       // Check portal restrictions
-      if (targetPortal === 'admin' && role !== 'Super Admin' && role !== 'Staff' && role !== 'Counsellor') {
+      if (
+        targetPortal === 'admin' &&
+        role !== 'Super Admin' &&
+        role !== 'Staff' &&
+        role !== 'Counsellor' &&
+        role !== 'Analyst' &&
+        role !== 'Analyst / Viewer'
+      ) {
         await signOut(auth);
         return {
           success: false,

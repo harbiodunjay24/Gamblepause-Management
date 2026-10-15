@@ -1349,6 +1349,10 @@ class DataService {
   }
 
   private loadFromStorage() {
+    if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+      this.cleanseWorkflows();
+      return;
+    }
     try {
       const storedClients = localStorage.getItem(STORAGE_KEYS.CLIENTS);
       const storedForms = localStorage.getItem(STORAGE_KEYS.FORMS);
@@ -1377,6 +1381,10 @@ class DataService {
   }
 
   private saveToStorage() {
+    if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+      this.notify();
+      return;
+    }
     try {
       localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(this.clients));
       localStorage.setItem(STORAGE_KEYS.FORMS, JSON.stringify(this.forms));
@@ -4172,6 +4180,7 @@ class DataService {
         newClients: 0,
         assessmentsDueToday: 0,
         overdueAssessments: 0,
+        completedClients: 0,
         completedAssessments: 0,
         clientsRequiringFollowup: 0,
       };
@@ -4203,7 +4212,14 @@ class DataService {
     // 4. Overdue: calculated from active cohort authoritatively
     const overdueAssessments = activeClientsCohort.filter((c) => isClientOverdue(c)).length;
 
-    // 5. Completed assessments
+    // 5. Completed unique clients (clients who completed all 6 stages or status is Completed)
+    const completedClients = clientPool.filter(
+      (c) =>
+        (c.status || '').toLowerCase() === 'completed' ||
+        (typeof c.totalAssessmentsCompleted === 'number' && c.totalAssessmentsCompleted >= 6)
+    ).length;
+
+    // 5b. Completed assessments filed across cohort
     const completedAssessments = submissionPool.length;
 
     // 6. High Priority: calculated ONLY from the CURRENT ACTIVE CLIENT COHORT
@@ -4217,6 +4233,7 @@ class DataService {
       newClients,
       assessmentsDueToday,
       overdueAssessments,
+      completedClients,
       completedAssessments,
       clientsRequiringFollowup,
     };

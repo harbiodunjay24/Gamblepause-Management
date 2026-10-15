@@ -225,17 +225,7 @@ function createInitialDatabase(): DatabaseSchema {
       status: 'Active',
       dateAdded: '2026-01-01T00:00:00.000Z',
     },
-    {
-      id: 'counsellor-benjamin',
-      name: 'Benjamin',
-      email: 'benjamin@gamblepause.org',
-      phone: '+234 801 111 2233',
-      role: 'Counsellor',
-      assignedClientsCount: 1,
-      active: true,
-      status: 'Active',
-      dateAdded: '2026-01-15T09:00:00.000Z',
-    },
+
     {
       id: 'counsellor-micheal',
       name: 'Micheal Akinniku',
@@ -295,23 +285,7 @@ function createInitialDatabase(): DatabaseSchema {
       name: 'Ladipo Abiose',
       active: true,
     },
-    // Benjamin
-    'benjamin': {
-      usernameOrEmail: 'Benjamin',
-      hash: defaultHash,
-      userId: 'counsellor-benjamin',
-      role: 'Counsellor',
-      name: 'Benjamin',
-      active: true,
-    },
-    'benjamin@gamblepause.org': {
-      usernameOrEmail: 'Benjamin',
-      hash: defaultHash,
-      userId: 'counsellor-benjamin',
-      role: 'Counsellor',
-      name: 'Benjamin',
-      active: true,
-    },
+
     // Micheal Akinniku
     'micheal.akinniku': {
       usernameOrEmail: 'Micheal.Akinniku',
@@ -555,9 +529,7 @@ function loadDatabase(): void {
       const fakeNames = ['counsellor a', 'counsellor b', 'demo counsellor', 'dr. example', 'sarah', 'john'];
       db.staff = db.staff.filter((s) => !fakeNames.includes(s.name.trim().toLowerCase()));
 
-      // Ensure the three real counsellors exist
       const requiredCounsellors = [
-        { id: 'counsellor-benjamin', name: 'Benjamin', email: 'benjamin@gamblepause.org' },
         { id: 'counsellor-micheal', name: 'Micheal Akinniku', email: 'micheal.akinniku@gamblepause.org' },
         { id: 'counsellor-celia', name: 'Celia Badmus', email: 'celia.badmus@gamblepause.org' },
       ];

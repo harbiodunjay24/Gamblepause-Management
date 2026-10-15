@@ -35,16 +35,7 @@ export const INITIAL_STAFF: StaffUser[] = [
     assignedClientsCount: 0,
     active: true,
   },
-  {
-    id: 'counsellor-benjamin',
-    name: 'Benjamin',
-    email: 'benjamin@gamblepause.org',
-    role: 'Counsellor',
-    phone: '+234 809 111 2233',
-    whatsappNumber: '+234 809 111 2233',
-    assignedClientsCount: 2,
-    active: true,
-  },
+
   {
     id: 'counsellor-micheal',
     name: 'Micheal Akinniku',

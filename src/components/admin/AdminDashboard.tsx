@@ -24,12 +24,14 @@ interface AdminDashboardProps {
   currentUser: StaffUser;
   onSelectClient: (client: Client) => void;
   onNavigateTab: (tab: string, filter?: string) => void;
+  isReadOnly?: boolean;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUser,
   onSelectClient,
   onNavigateTab,
+  isReadOnly = false,
 }) => {
   const [dateRange, setDateRange] = useState<'all' | '7d' | '30d' | '90d'>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
@@ -119,8 +121,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }
       }
 
-      // 3. Status filter (AND logic)
-      if (selectedStatus !== 'all' && c.status !== selectedStatus) {
+      // 3. Status filter (AND logic) - aligns with clinical Active and Completed definitions
+      if (selectedStatus === 'Active' || selectedStatus === 'active') {
+        if (!isClientActiveInPathway(c)) return false;
+      } else if (selectedStatus === 'Completed' || selectedStatus === 'completed') {
+        if (isClientActiveInPathway(c)) return false;
+      } else if (selectedStatus === 'Upcoming Due') {
+        if (!isClientUpcomingDue(c)) return false;
+      } else if (selectedStatus === 'Overdue') {
+        if (!isClientOverdue(c)) return false;
+      } else if (selectedStatus !== 'all' && c.status !== selectedStatus) {
         return false;
       }
 
@@ -275,15 +285,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            onClick={handleTriggerAutomatedCheck}
-            id="trigger-overdue-check-btn"
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 px-3.5 py-2.5 rounded-xl transition-all cursor-pointer shadow-sm"
-            title="Scan client database to identify overdue assessments and queue automated email/SMS reminders"
-          >
-            <RefreshCw className="w-3.5 h-3.5 text-red-600" />
-            <span>Run Automated Check</span>
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={handleTriggerAutomatedCheck}
+              id="trigger-overdue-check-btn"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 px-3.5 py-2.5 rounded-xl transition-all cursor-pointer shadow-sm"
+              title="Scan client database to identify overdue assessments and queue automated email/SMS reminders"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-red-600" />
+              <span>Run Automated Check</span>
+            </button>
+          )}
 
           <button
             onClick={() => onNavigateTab('clients')}
@@ -504,14 +516,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
             selectedStatus === 'Active' ? 'border-emerald-500 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-gray-200'
           }`}
-          title="Click to filter by Active clients"
+          title="Click to filter by Active clients in recovery pathway"
         >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>Active</span>
             <UserCheck className="w-4 h-4 text-emerald-500" />
           </div>
           <p className="text-2xl font-black text-emerald-600 mt-2">{metrics.activeClients}</p>
-          <span className="text-[10px] text-emerald-700 font-medium mt-1">In progress</span>
+          <div className="flex items-center justify-between mt-1 text-[10px]">
+            <span className="text-emerald-700 font-medium">In pathway</span>
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                onNavigateTab('clients', 'Active');
+              }}
+              className="font-bold text-emerald-600 hover:underline flex items-center gap-0.5"
+            >
+              <span>View Table</span>
+              <ChevronRight className="w-3 h-3" />
+            </span>
+          </div>
         </div>
 
         {/* 3. New Clients */}
@@ -570,20 +594,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
 
-        {/* 6. Completed Submissions */}
+        {/* 6. Completed Pathway Clients */}
         <div
           onClick={() => setSelectedStatus(selectedStatus === 'Completed' ? 'all' : 'Completed')}
           className={`bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-between cursor-pointer hover:shadow-md transition-all active:scale-[0.99] ${
             selectedStatus === 'Completed' ? 'border-emerald-500 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-gray-200'
           }`}
-          title="Click to filter by Completed clients"
+          title="Click to filter by unique clients who completed recovery pathway"
         >
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
-            <span>Completed</span>
+            <span>Completed Pathway</span>
             <CheckCircle className="w-4 h-4 text-emerald-600" />
           </div>
-          <p className="text-2xl font-black text-gray-900 mt-2">{metrics.completedAssessments}</p>
-          <span className="text-[10px] text-gray-400 mt-1">Assessments filed</span>
+          <p className="text-2xl font-black text-gray-900 mt-2">{metrics.completedClients}</p>
+          <div className="flex items-center justify-between mt-1 text-[10px]">
+            <span className="text-gray-400">{metrics.completedAssessments} assessments</span>
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                onNavigateTab('clients', 'Completed');
+              }}
+              className="font-bold text-emerald-600 hover:underline flex items-center gap-0.5"
+            >
+              <span>View Table</span>
+              <ChevronRight className="w-3 h-3" />
+            </span>
+          </div>
         </div>
 
         {/* 7. Requiring Follow-up */}
@@ -659,11 +695,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             <div className="space-y-2.5 mt-4">
               {[
-                { label: 'Active', count: metrics.activeClients, color: 'bg-emerald-500', text: 'text-emerald-700' },
-                { label: 'Assessment Due', count: metrics.assessmentsDueToday, color: 'bg-amber-500', text: 'text-amber-700' },
-                { label: 'Overdue', count: metrics.overdueAssessments, color: 'bg-red-600', text: 'text-red-700' },
-                { label: 'Completed Pathway', count: filteredClients.filter((c) => c.status === 'Completed').length, color: 'bg-emerald-600', text: 'text-emerald-800' },
-                { label: 'Awaiting Assessment', count: filteredClients.filter((c) => c.status === 'Awaiting Assessment').length, color: 'bg-gray-400', text: 'text-gray-700' },
+                { label: 'Active in Pathway', count: metrics.activeClients, color: 'bg-emerald-500', text: 'text-emerald-700' },
+                { label: 'Completed Pathway', count: metrics.completedClients, color: 'bg-emerald-600', text: 'text-emerald-800' },
+                { label: 'Assessment Due Today', count: metrics.assessmentsDueToday, color: 'bg-amber-500', text: 'text-amber-700' },
+                { label: 'Overdue Assessments', count: metrics.overdueAssessments, color: 'bg-red-600', text: 'text-red-700' },
               ].map((item) => (
                 <div key={item.label} className="flex items-center justify-between p-2 rounded-xl bg-gray-50 text-xs">
                   <div className="flex items-center gap-2">

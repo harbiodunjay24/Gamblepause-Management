@@ -7,7 +7,7 @@ export type ClientStatus =
   | 'Closed'
   | 'Referred';
 
-export type UserRole = 'Super Admin' | 'Counsellor' | 'Staff' | 'Analyst / Viewer';
+export type UserRole = 'Super Admin' | 'Counsellor' | 'Staff' | 'Analyst / Viewer' | 'Analyst';
 
 export interface StaffUser {
   id: string;

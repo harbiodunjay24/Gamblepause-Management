@@ -122,6 +122,10 @@ export const ClientList: React.FC<ClientListProps> = ({
         if (!isClientUpcomingDue(c)) return false;
       } else if (statusFilter === 'Overdue') {
         if (!isClientOverdue(c)) return false;
+      } else if (statusFilter === 'Active' || statusFilter === 'active') {
+        if (!isClientActiveInPathway(c)) return false;
+      } else if (statusFilter === 'Completed' || statusFilter === 'completed') {
+        if (isClientActiveInPathway(c)) return false;
       } else if (statusFilter !== 'all' && c.status !== statusFilter) {
         return false;
       }

@@ -31,6 +31,7 @@ interface ClientListProps {
   onSelectClient: (client: Client) => void;
   onNewClientClick: () => void;
   initialFilter?: string;
+  isReadOnly?: boolean;
 }
 
 export const ClientList: React.FC<ClientListProps> = ({
@@ -38,6 +39,7 @@ export const ClientList: React.FC<ClientListProps> = ({
   onSelectClient,
   onNewClientClick,
   initialFilter,
+  isReadOnly = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>(initialFilter || 'all');
@@ -108,7 +110,7 @@ export const ClientList: React.FC<ClientListProps> = ({
 
   const upcomingCount = useMemo(() => clients.filter((c) => isClientUpcomingDue(c)).length, [clients]);
   const overdueCount = useMemo(() => clients.filter((c) => isClientOverdue(c)).length, [clients]);
-  const activeCount = useMemo(() => clients.filter((c) => isClientActiveInPathway(c)).length, [clients]);
+  const activeCount = useMemo(() => clients.filter((c) => c.status === 'Active').length, [clients]);
 
   const filteredClients = useMemo(() => {
     return clients.filter((c) => {
@@ -123,9 +125,9 @@ export const ClientList: React.FC<ClientListProps> = ({
       } else if (statusFilter === 'Overdue') {
         if (!isClientOverdue(c)) return false;
       } else if (statusFilter === 'Active' || statusFilter === 'active') {
-        if (!isClientActiveInPathway(c)) return false;
+        if (c.status !== 'Active') return false;
       } else if (statusFilter === 'Completed' || statusFilter === 'completed') {
-        if (isClientActiveInPathway(c)) return false;
+        if ((c.status || '').toLowerCase() !== 'completed' && !(typeof c.totalAssessmentsCompleted === 'number' && c.totalAssessmentsCompleted >= 6)) return false;
       } else if (statusFilter !== 'all' && c.status !== statusFilter) {
         return false;
       }
@@ -215,14 +217,16 @@ export const ClientList: React.FC<ClientListProps> = ({
           </p>
         </div>
 
-        <button
-          id="add-new-client-btn"
-          onClick={onNewClientClick}
-          className="inline-flex items-center justify-center gap-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-4 py-2.5 rounded-xl shadow-md shadow-red-500/20 transition-all cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4" />
-          <span>Register New Client</span>
-        </button>
+        {!isReadOnly && currentUser?.role !== 'Analyst' && currentUser?.role !== 'Analyst / Viewer' && (
+          <button
+            id="add-new-client-btn"
+            onClick={onNewClientClick}
+            className="inline-flex items-center justify-center gap-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-4 py-2.5 rounded-xl shadow-md shadow-red-500/20 transition-all cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Register New Client</span>
+          </button>
+        )}
       </div>
 
       {/* Search & Filter Controls */}

@@ -310,6 +310,10 @@ export const AnalyticsExport: React.FC<AnalyticsExportProps> = ({ currentUser })
               <span className="text-[10px] font-black uppercase tracking-wider bg-red-600 text-white px-2.5 py-0.5 rounded-full shadow-xs">
                 Super User
               </span>
+            ) : currentUser?.role === 'Analyst' || currentUser?.role === 'Analyst / Viewer' ? (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-full">
+                Analyst / Viewer (Reporting Access)
+              </span>
             ) : (
               <span className="text-[10px] font-bold uppercase tracking-wider bg-gray-100 text-gray-700 px-2 py-0.5 rounded">
                 Staff / Counsellor

@@ -3,7 +3,7 @@
   "appId": "1:902783570630:web:40a74e10a8dacf20947dc7",
   "apiKey": "AIzaSyC8z5JT7n7TeVJFKBEn2AIw4Ef8D4WfAUI",
   "authDomain": "gamblepause-africa.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-gamblepauseclien-cde82668-4f2d-49c6-ace1-d40fa583bceb",
+  "firestoreDatabaseId": "(default)",
   "storageBucket": "gamblepause-africa.firebasestorage.app",
   "messagingSenderId": "902783570630",
   "measurementId": "",

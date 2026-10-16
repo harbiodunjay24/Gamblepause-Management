@@ -19,6 +19,7 @@ import { StaffAndRoles } from './components/admin/StaffAndRoles';
 import { CounsellorManagement } from './components/admin/CounsellorManagement';
 import { AnalyticsExport } from './components/admin/AnalyticsExport';
 import { HistoricalClientMigration } from './components/admin/HistoricalClientMigration';
+import { AnalystDashboard } from './components/analyst/AnalystDashboard';
 import { dataService } from './services/dataService';
 import { authService, AuthUser } from './services/authService';
 import { auth } from './lib/firebase';
@@ -438,6 +439,34 @@ export default function App() {
       (currentUser?.email || '').toLowerCase().trim() === 'ayodejiharbiodun24@gmail.com' &&
       currentUser?.role === 'Super Admin';
 
+    const isAnalyst = currentUser?.role === 'Analyst' || currentUser?.role === 'Analyst / Viewer';
+
+    // Tabs authorized for the current user's role: Analysts have dedicated analytics workspace, reports, and read-only client directory
+    const authorizedTabs = isAnalyst
+      ? [
+          { id: 'dashboard', label: 'Analyst Dashboard & Analytics', icon: LayoutDashboard },
+          { id: 'reports', label: 'Advanced Reports & Export', icon: Download },
+          { id: 'clients', label: 'Client Directory (Read-Only)', icon: Users },
+        ]
+      : [
+          { id: 'dashboard', label: 'Dashboard & Metrics', icon: LayoutDashboard },
+          { id: 'clients', label: 'Client Registry', icon: Users },
+          { id: 'counsellors', label: 'Counsellors', icon: UserCheck },
+          { id: 'forms', label: 'Form Builder & Questions', icon: FileSpreadsheet },
+          { id: 'workflows', label: 'Assessment Sequences', icon: GitBranch },
+          { id: 'notifications', label: 'Reminder Engine', icon: Bell },
+          { id: 'roles', label: 'Staff & Security Roles', icon: ShieldCheck },
+          { id: 'reports', label: 'Reports & CSV Export', icon: Download },
+          ...(isMigrationAuthorized
+            ? [{ id: 'migration', label: 'Historical Migration', icon: Database }]
+            : []),
+        ];
+
+    // Ensure Analyst is constrained to authorized tabs
+    const effectiveAdminTab = isAnalyst && !['dashboard', 'reports', 'clients'].includes(adminTab)
+      ? 'dashboard'
+      : adminTab;
+
     return (
       <div className="min-h-screen bg-gray-50/80 text-gray-900 font-sans flex flex-col selection:bg-red-600 selection:text-white">
         <Header
@@ -457,6 +486,7 @@ export default function App() {
               currentUser={staffUser}
               onBack={() => handleSelectClientForProfile(null)}
               onOpenAssessmentAsClient={(c) => {
+                if (isAnalyst) return;
                 const token = dataService.getAssessmentToken(c.id, c.nextAssessmentId || 'form-recovery-1');
                 if (token) {
                   navigateTo('token-assessment', token);
@@ -467,21 +497,9 @@ export default function App() {
             <div className="space-y-6">
               {/* Admin Navigation Tabs */}
               <div className="bg-white rounded-2xl p-2 border border-gray-200 shadow-sm flex flex-wrap items-center gap-1.5 overflow-x-auto text-xs font-bold">
-                {[
-                  { id: 'dashboard', label: 'Dashboard & Metrics', icon: LayoutDashboard },
-                  { id: 'clients', label: 'Client Registry', icon: Users },
-                  { id: 'counsellors', label: 'Counsellors', icon: UserCheck },
-                  { id: 'forms', label: 'Form Builder & Questions', icon: FileSpreadsheet },
-                  { id: 'workflows', label: 'Assessment Sequences', icon: GitBranch },
-                  { id: 'notifications', label: 'Reminder Engine', icon: Bell },
-                  { id: 'roles', label: 'Staff & Security Roles', icon: ShieldCheck },
-                  { id: 'reports', label: 'Reports & CSV Export', icon: Download },
-                  ...(isMigrationAuthorized
-                    ? [{ id: 'migration', label: 'Historical Migration', icon: Database }]
-                    : []),
-                ].map((tab) => {
+                {authorizedTabs.map((tab) => {
                   const Icon = tab.icon;
-                  const isActive = adminTab === tab.id;
+                  const isActive = effectiveAdminTab === tab.id;
                   return (
                     <button
                       key={tab.id}
@@ -500,27 +518,43 @@ export default function App() {
               </div>
 
               {/* Sub-Views */}
-              {adminTab === 'dashboard' && (
-                <AdminDashboard
+              {effectiveAdminTab === 'dashboard' && (
+                isAnalyst ? (
+                  <AnalystDashboard
+                    currentUser={staffUser}
+                    onSelectClient={(c) => handleSelectClientForProfile(c)}
+                    onNavigateTab={(tab, filter) => {
+                      if (['reports', 'dashboard', 'clients'].includes(tab)) {
+                        setAdminTab(tab);
+                        if (filter) setClientListFilter(filter);
+                      }
+                    }}
+                  />
+                ) : (
+                  <AdminDashboard
+                    currentUser={staffUser}
+                    onSelectClient={(c) => handleSelectClientForProfile(c)}
+                    onNavigateTab={(tab, filter) => {
+                      setAdminTab(tab);
+                      if (filter) setClientListFilter(filter);
+                    }}
+                  />
+                )
+              )}
+
+              {effectiveAdminTab === 'clients' && (
+                <ClientList
                   currentUser={staffUser}
+                  initialFilter={clientListFilter}
+                  isReadOnly={isAnalyst}
                   onSelectClient={(c) => handleSelectClientForProfile(c)}
-                  onNavigateTab={(tab, filter) => {
-                    setAdminTab(tab);
-                    if (filter) setClientListFilter(filter);
+                  onNewClientClick={() => {
+                    if (!isAnalyst) navigateTo('intake');
                   }}
                 />
               )}
 
-              {adminTab === 'clients' && (
-                <ClientList
-                  currentUser={staffUser}
-                  initialFilter={clientListFilter}
-                  onSelectClient={(c) => handleSelectClientForProfile(c)}
-                  onNewClientClick={() => navigateTo('intake')}
-                />
-              )}
-
-              {adminTab === 'counsellors' && (
+              {!isAnalyst && effectiveAdminTab === 'counsellors' && (
                 <CounsellorManagement
                   currentUser={staffUser}
                   onSelectClient={(c) => handleSelectClientForProfile(c)}
@@ -528,25 +562,25 @@ export default function App() {
                 />
               )}
 
-              {adminTab === 'forms' && (
+              {!isAnalyst && effectiveAdminTab === 'forms' && (
                 <FormManagement onPreviewForm={(form) => setPreviewForm(form)} />
               )}
 
-              {adminTab === 'workflows' && <WorkflowConfig />}
+              {!isAnalyst && effectiveAdminTab === 'workflows' && <WorkflowConfig />}
 
-              {adminTab === 'notifications' && <NotificationCenter />}
+              {!isAnalyst && effectiveAdminTab === 'notifications' && <NotificationCenter />}
 
-              {adminTab === 'roles' && (
+              {!isAnalyst && effectiveAdminTab === 'roles' && (
                 <StaffAndRoles
                   currentUser={staffUser}
                 />
               )}
 
-              {adminTab === 'reports' && (
+              {effectiveAdminTab === 'reports' && (
                 <AnalyticsExport currentUser={staffUser} />
               )}
 
-              {adminTab === 'migration' && (
+              {!isAnalyst && effectiveAdminTab === 'migration' && (
                 isMigrationAuthorized ? (
                   <HistoricalClientMigration
                     currentUser={staffUser}

@@ -15,7 +15,13 @@ import {
   PhoneCall,
   Activity,
 } from 'lucide-react';
-import { dataService, isClientActiveInPathway, isHistoricalMigratedClient } from '../../services/dataService';
+import {
+  dataService,
+  isClientActiveInPathway,
+  isHistoricalMigratedClient,
+  isClientUpcomingDue,
+  isClientOverdue,
+} from '../../services/dataService';
 import { NotificationService } from '../../services/notificationService';
 import { Client, StaffUser } from '../../types';
 import { NIGERIAN_STATES } from '../../data/demoData';
@@ -123,9 +129,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 3. Status filter (AND logic) - aligns with clinical Active and Completed definitions
       if (selectedStatus === 'Active' || selectedStatus === 'active') {
-        if (!isClientActiveInPathway(c)) return false;
+        if (c.status !== 'Active') return false;
       } else if (selectedStatus === 'Completed' || selectedStatus === 'completed') {
-        if (isClientActiveInPathway(c)) return false;
+        if ((c.status || '').toLowerCase() !== 'completed' && !(typeof c.totalAssessmentsCompleted === 'number' && c.totalAssessmentsCompleted >= 6)) return false;
       } else if (selectedStatus === 'Upcoming Due') {
         if (!isClientUpcomingDue(c)) return false;
       } else if (selectedStatus === 'Overdue') {

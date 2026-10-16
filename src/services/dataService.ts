@@ -93,6 +93,7 @@ class DataService {
   private firestoreWorkflowsUnsubscribe: (() => void) | null = null;
   private firestoreFormsUnsubscribe: (() => void) | null = null;
   private firestoreSettingsUnsubscribe: (() => void) | null = null;
+  private firestoreAssessmentResponsesUnsubscribe: (() => void) | null = null;
   private firestoreSyncActive: boolean = false;
   private authoritativeLoaded: boolean = false;
   private assessmentAccessMode: AssessmentAccessMode = 'scheduled';
@@ -139,6 +140,10 @@ class DataService {
     if (this.firestoreSettingsUnsubscribe) {
       this.firestoreSettingsUnsubscribe();
       this.firestoreSettingsUnsubscribe = null;
+    }
+    if (this.firestoreAssessmentResponsesUnsubscribe) {
+      this.firestoreAssessmentResponsesUnsubscribe();
+      this.firestoreAssessmentResponsesUnsubscribe = null;
     }
     this.firestoreSyncActive = false;
   }
@@ -792,40 +797,56 @@ class DataService {
       return;
     }
 
-    const isSuperAdminUser =
+    const isAuthorizedForGlobalSubmissions =
       user.role === 'Super Admin' ||
-      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com'].includes(
+      user.role === 'Analyst' ||
+      user.role === 'Analyst / Viewer' ||
+      ['ayodejiharbiodun24@gmail.com', 'ladipo.abiose@gamblepause.org', 'stevobenjo@gmail.com', 'harbiodunjay2027@gmail.com'].includes(
         user.email?.toLowerCase() || ''
       );
-    if (!isSuperAdminUser) return;
+    if (!isAuthorizedForGlobalSubmissions) return;
 
     try {
-      const snap = await getDocs(collection(db, 'assessmentResponses'));
-      const firestoreSubmissions: AssessmentSubmission[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data && data.clientId) {
-          firestoreSubmissions.push({
-            id: data.id || docSnap.id,
-            clientId: data.clientId,
-            clientName: data.clientName || 'Client',
-            formId: data.formId,
-            formName: data.formTitle || data.formName || 'Assessment',
-            stageId: data.stageId || 'stage-initial',
-            submittedAt: data.submittedAt || new Date().toISOString(),
-            answers: Array.isArray(data.answers) ? data.answers : [],
-            totalScore: typeof data.totalScore === 'number' ? data.totalScore : (typeof data.score === 'number' ? data.score : undefined),
-            section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
-            gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
-            scoreRiskLevel: data.scoreRiskLevel || data.severity || data.riskLevel,
-            status: data.status || 'Completed',
-            counsellorNotes: data.counsellorNotes,
-          });
-        }
-      });
-      if (firestoreSubmissions.length > 0) {
-        this.mergeFirestoreSubmissions(firestoreSubmissions);
+      if (this.firestoreAssessmentResponsesUnsubscribe) {
+        this.firestoreAssessmentResponsesUnsubscribe();
+        this.firestoreAssessmentResponsesUnsubscribe = null;
       }
+
+      this.firestoreAssessmentResponsesUnsubscribe = onSnapshot(
+        collection(db, 'assessmentResponses'),
+        (snapshot) => {
+          const firestoreSubmissions: AssessmentSubmission[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            if (data && data.clientId) {
+              firestoreSubmissions.push({
+                id: data.id || docSnap.id,
+                clientId: data.clientId,
+                clientName: data.clientName || 'Client',
+                formId: data.formId,
+                formName: data.formTitle || data.formName || 'Assessment',
+                stageId: data.stageId || 'stage-initial',
+                submittedAt: data.submittedAt || new Date().toISOString(),
+                answers: Array.isArray(data.answers) ? data.answers : [],
+                totalScore: typeof data.totalScore === 'number' ? data.totalScore : (typeof data.score === 'number' ? data.score : undefined),
+                section5Score: typeof data.section5Score === 'number' ? data.section5Score : undefined,
+                gpdsScore: typeof data.gpdsScore === 'number' ? data.gpdsScore : undefined,
+                scoreRiskLevel: data.scoreRiskLevel || data.severity || data.riskLevel,
+                status: data.status || 'Completed',
+                counsellorNotes: data.counsellorNotes,
+              });
+            }
+          });
+          if (firestoreSubmissions.length > 0) {
+            this.mergeFirestoreSubmissions(firestoreSubmissions);
+            this.saveToStorage();
+            this.notify();
+          }
+        },
+        (err) => {
+          console.warn('[DataService] Firestore assessmentResponses real-time listener notice:', err?.message || err);
+        }
+      );
     } catch (err: any) {
       console.warn('[DataService] Firestore assessmentResponses sync notice:', err?.message || err);
     }
@@ -4194,9 +4215,10 @@ class DataService {
 
     const totalClients = clientPool.length;
 
-    // 1. Active Clients: participating in pathway, not completed / closed / archived / finished all 6 stages
+    // 1. Active Clients: authoritatively clients with status 'Active' (matches click-through list exactly)
+    const activeClients = clientPool.filter((c) => c.status === 'Active').length;
     const activeClientsCohort = clientPool.filter(isClientActiveInPathway);
-    const activeClients = activeClientsCohort.length;
+    const activeInPathwayCount = activeClientsCohort.length;
 
     // 2. New (7 Days): original client registration/creation date occurred within the rolling 7 days
     const newClients = clientPool.filter(isClientNewInLast7Days).length;
@@ -4236,6 +4258,7 @@ class DataService {
       completedClients,
       completedAssessments,
       clientsRequiringFollowup,
+      activeInPathwayCount,
     };
   }
 }
@@ -4253,7 +4276,12 @@ export function isClientActiveInPathway(client: Client): boolean {
     return false;
   }
 
-  const status = (client.status || '').toLowerCase().trim();
+  // Clients with unassigned/missing status or not enrolled in a pathway are not active
+  if (!client.status) {
+    return false;
+  }
+
+  const status = client.status.toLowerCase().trim();
   const inactiveStatuses = ['completed', 'archived', 'deactivated', 'withdrawn', 'closed', 'inactive', 'referred'];
   if (inactiveStatuses.includes(status)) {
     return false;
@@ -4363,7 +4391,15 @@ export function isGenuineClient(client: Client): boolean {
     fullNameLower.includes('test client') ||
     fullNameLower.includes('probe client') ||
     fullNameLower === 'test' ||
-    fullNameLower === 'probe'
+    fullNameLower === 'probe' ||
+    fullNameLower === 'scanner' ||
+    fullNameLower === 'scan' ||
+    fullNameLower === 'check' ||
+    fullNameLower.startsWith('scanner') ||
+    fullNameLower.startsWith('scan ') ||
+    fullNameLower.startsWith('check ') ||
+    fullNameLower.startsWith('probe ') ||
+    fullNameLower.startsWith('test ')
   ) {
     return false;
   }

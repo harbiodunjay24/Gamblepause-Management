@@ -32,7 +32,7 @@ export interface AuthUser {
   id: string;
   name: string;
   email: string;
-  role: 'Super Admin' | 'Counsellor' | 'Staff' | 'Analyst / Viewer' | 'Client';
+  role: 'Super Admin' | 'Counsellor' | 'Staff' | 'Analyst / Viewer' | 'Analyst' | 'Client';
   phone?: string;
   clientId?: string; // Set when role === 'Client'
   username?: string;
@@ -69,6 +69,24 @@ class AuthService {
   private listeners: Set<(user: AuthUser | null) => void> = new Set();
   private initialized: boolean = false;
   private sessionUnsubscribe: (() => void) | null = null;
+
+  private saveSession(user: AuthUser | null) {
+    if (typeof window !== 'undefined' && typeof sessionStorage !== 'undefined') {
+      try {
+        if (user) {
+          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(user));
+        } else {
+          sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+        }
+      } catch {
+        // Ignore storage exceptions
+      }
+    }
+  }
+
+  private clearSession() {
+    this.saveSession(null);
+  }
 
   constructor() {
     this.init();
@@ -196,7 +214,7 @@ class AuthService {
               this.sessionUnsubscribe = null;
             }
             this.currentUser = null;
-            sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+            this.clearSession();
             this.notify();
             return;
           }
@@ -211,7 +229,7 @@ class AuthService {
           };
 
           this.currentUser = authUser;
-          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+          this.saveSession(authUser);
 
           // Active session watchdog: detect deactivation in real-time with resilient error handling
           if (this.sessionUnsubscribe) {
@@ -232,7 +250,7 @@ class AuthService {
                       this.sessionUnsubscribe = null;
                     }
                     this.currentUser = null;
-                    sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+                    this.clearSession();
                     this.notify();
                     if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
                       window.location.href = '/admin/login?deactivated=1';
@@ -364,7 +382,7 @@ class AuthService {
       };
 
       this.currentUser = authUser;
-      sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+      this.saveSession(authUser);
       this.notify();
 
       return { success: true, user: authUser };
@@ -404,7 +422,6 @@ class AuthService {
       'celia': 'celia.badmus@gamblepause.org',
       'biodun.analyst': 'harbiodunjay2027@gmail.com',
       'analyst': 'harbiodunjay2027@gmail.com',
-      'celia': 'celia.badmus@gamblepause.org',
     };
 
     if (usernameMap[trimmed]) {
@@ -576,7 +593,7 @@ class AuthService {
           this.sessionUnsubscribe = null;
         }
         this.currentUser = null;
-        sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+        this.clearSession();
         this.notify();
         return {
           success: false,
@@ -624,7 +641,7 @@ class AuthService {
       };
 
       this.currentUser = authUser;
-      sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authUser));
+      this.saveSession(authUser);
       this.notify();
 
       return { success: true, user: authUser };
@@ -708,7 +725,7 @@ class AuthService {
       console.warn('[authService] Firebase signOut notice:', e);
     }
     this.currentUser = null;
-    sessionStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+    this.clearSession();
     try {
       localStorage.removeItem('gamblepause_clients');
     } catch {}
@@ -876,7 +893,7 @@ class AuthService {
 
         if (this.currentUser && this.currentUser.id === user.uid) {
           this.currentUser.email = cleanEmail;
-          sessionStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(this.currentUser));
+          this.saveSession(this.currentUser);
           this.notify();
         }
 

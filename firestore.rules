@@ -29,11 +29,19 @@ service cloud.firestore {
       );
     }
 
+    function isAnalyst() {
+      return isAuthenticated() && (
+        request.auth.token.email in ['harbiodunjay2027@gmail.com'] ||
+        (hasUserData() && (getUserData().role == 'Analyst' || getUserData().role == 'Analyst / Viewer' || getUserData().role == 'Viewer'))
+      );
+    }
+
     function isStaff() {
       return isAuthenticated() && (
         isSuperAdmin() ||
         isCounsellor() ||
-        (hasUserData() && getUserData().role in ['Staff', 'Analyst / Viewer'])
+        isAnalyst() ||
+        (hasUserData() && getUserData().role in ['Staff', 'Analyst / Viewer', 'Analyst', 'Viewer'])
       );
     }
 
@@ -68,7 +76,7 @@ service cloud.firestore {
                     && request.resource.data.consentGiven == true
                     && request.resource.data.id != null
                     && request.resource.data.firstName != null;
-      allow read: if isSuperAdmin() || (
+      allow read: if isSuperAdmin() || isAnalyst() || (
         isCounsellor() && (
           resource.data.assignedCounsellorId == request.auth.uid ||
           (hasUserData() && resource.data.assignedCounsellorName == getUserData().name)
@@ -124,7 +132,7 @@ service cloud.firestore {
          exists(/databases/$(database)/documents/clients/$(request.resource.data.clientId)) &&
          get(/databases/$(database)/documents/clients/$(request.resource.data.clientId)).data.authUid == request.auth.uid)
       );
-      allow read: if isSuperAdmin() || (
+      allow read: if isSuperAdmin() || isAnalyst() || (
         isAuthenticated() && (
           resource.data.authUid == request.auth.uid ||
           (resource.data.clientId != null &&
